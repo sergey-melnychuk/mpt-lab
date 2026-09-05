@@ -13,19 +13,29 @@ proptest! {
         let t = MerkleTree::<K>::new(&ls);
         let root = t.root();
         for (i, leaf) in ls.iter().enumerate() {
-            prop_assert!(merkle::verify::<K>(&root, leaf, i, &t.prove(i).unwrap()));
+            prop_assert!(merkle::verify::<K>(&root, leaf, i, t.len(), &t.prove(i).unwrap()));
         }
     }
 
     #[test]
     fn proof_length_matches_depth_invariant(n in 1usize..200) {
+        fn expected_len(mut index: usize, mut size: usize) -> usize {
+            let mut count = 0;
+            while size > 1 {
+                if !(index == size - 1 && size % 2 == 1) {
+                    count += 1;
+                }
+                index /= 2;
+                size = size.div_ceil(2);
+            }
+            count
+        }
         let ls: Vec<Vec<u8>> = (0..n).map(|i| vec![i as u8]).collect();
         let t = MerkleTree::<K>::new(&ls);
-        let expected = n.next_power_of_two().trailing_zeros() as usize;
         for i in 0..n {
-            // If your odd-count strategy makes this false, the invariant is
-            // different, not absent. Replace it with yours and justify it.
-            prop_assert_eq!(t.prove(i).unwrap().siblings.len(), expected);
+            let len = expected_len(i, n);
+            prop_assert!(len <= (usize::BITS - (n - 1).leading_zeros()) as usize);
+            prop_assert_eq!(t.prove(i).unwrap().siblings.len(), len);
         }
     }
 
@@ -39,7 +49,7 @@ proptest! {
         let root = t.root();
         for i in 0..ls.len() {
             let p = t.prove(i).unwrap();
-            prop_assert!(!merkle::verify::<K>(&root, &outsider, i, &p));
+            prop_assert!(!merkle::verify::<K>(&root, &outsider, i, t.len(), &p));
         }
     }
 }
