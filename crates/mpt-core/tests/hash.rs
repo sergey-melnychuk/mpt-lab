@@ -67,7 +67,11 @@ fn parse(src: &str) -> Vec<Case> {
                     })
                     .collect()
             };
-            Case { name: name.clone(), pairs, root }
+            Case {
+                name: name.clone(),
+                pairs,
+                root,
+            }
         })
         .collect()
 }
@@ -87,7 +91,11 @@ fn order_matters(c: &Case) -> bool {
 fn apply(pairs: &[Pair], secure: bool) -> [u8; 32] {
     let mut t = Trie::<K>::new();
     for (k, v) in pairs {
-        let key = if secure { K::hash_all(&[k]).to_vec() } else { k.clone() };
+        let key = if secure {
+            K::hash_all(&[k]).to_vec()
+        } else {
+            k.clone()
+        };
         match v {
             Some(v) => t.insert(&key, v.clone()),
             None => {

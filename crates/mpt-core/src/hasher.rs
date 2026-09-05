@@ -37,3 +37,8 @@ impl Hasher for Keccak256 {
         h.finalize().into()
     }
 }
+
+pub fn keccak(data: &[u8]) -> [u8; 32] {
+    use sha3::Digest;
+    sha3::Keccak256::digest(data).into()
+}

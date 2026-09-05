@@ -1,16 +1,21 @@
-use alloc::{boxed::Box, collections::BTreeMap};
 use alloc::vec::Vec;
+use alloc::{boxed::Box, collections::BTreeMap};
 use rlp::RlpStream;
 
-use crate::path::hex_prefix_encode;
-use crate::{Hasher, path::{common_prefix_len, to_nibbles}};
+use crate::hasher::keccak;
+use crate::path::{hex_prefix_decode, hex_prefix_encode};
+use crate::{
+    Hasher,
+    path::{common_prefix_len, to_nibbles},
+};
 
 /// Radix-16 trie with path compression. No hashing at this stage — children are
 /// owned pointers, not hash references. Stage 5 replaces Box<Node> with a
 /// reference type and adds Merkleization.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Node {
     /// Yellow paper: the empty node. RLP-encoded as the empty string.
+    #[default]
     Null,
     /// Yellow paper: leaf node. `rlp([hp(path, true), value])`.
     /// `path` is the remaining key suffix at this point.
@@ -24,12 +29,6 @@ pub enum Node {
         children: [Option<Box<Node>>; 16],
         value: Option<Vec<u8>>,
     },
-}
-
-impl Default for Node {
-    fn default() -> Self {
-        Node::Null
-    }
 }
 
 impl Node {
@@ -93,7 +92,10 @@ pub struct Trie<H: Hasher> {
 
 impl<H: Hasher> Trie<H> {
     pub fn new() -> Self {
-        Self { root: Node::Null, db: Default::default() }
+        Self {
+            root: Node::Null,
+            db: Default::default(),
+        }
     }
 
     pub fn root(&self) -> &Node {
@@ -121,6 +123,177 @@ impl<H: Hasher> Trie<H> {
     pub fn hash(&mut self) -> H::Out {
         H::hash_one(&encode_node::<H>(&self.root, &mut self.db))
     }
+
+    pub fn prove(&mut self, key: &[u8]) -> Vec<Vec<u8>> {
+        if matches!(self.root, Node::Null) {
+            return Vec::new();
+        }
+        let mut ret = Vec::new();
+        collect::<H>(&self.root, &to_nibbles(key), &mut ret, &mut self.db, true);
+        ret
+    }
+}
+
+fn collect<H: Hasher>(
+    node: &Node,
+    suffix: &[u8],
+    out: &mut Vec<Vec<u8>>,
+    db: &mut BTreeMap<H::Out, Vec<u8>>,
+    is_root: bool,
+) {
+    let enc = encode_node::<H>(node, db);
+    if is_root || enc.len() >= 32 {
+        out.push(enc);
+    }
+    match node {
+        Node::Null | Node::Leaf { .. } => {}
+        Node::Skip { path, child } => {
+            if suffix.starts_with(path) {
+                collect::<H>(child, &suffix[path.len()..], out, db, false);
+            }
+        }
+        Node::Fork { children, .. } => {
+            if let Some((&n, rest)) = suffix.split_first()
+                && let Some(c) = &children[n as usize]
+            {
+                collect::<H>(c, rest, out, db, false);
+            }
+        }
+    }
+}
+
+/// Resolve a child reference. Returns the referenced node's bytes, advancing
+/// `cursor` only when the reference is a 32-byte hash — an inlined child is
+/// already covered by its parent's hash and consumes no proof node.
+fn resolve(
+    item: rlp::Rlp<'_>,
+    proof: &[Vec<u8>],
+    cursor: &mut usize,
+) -> Result<Vec<u8>, ProofError> {
+    if !item.is_data() {
+        return Ok(item.as_raw().to_vec());
+    }
+    let d = item.data().map_err(|_| ProofError::MalformedNode)?;
+    if d.len() != 32 {
+        return Err(ProofError::BadNodeRef);
+    }
+    let n = proof.get(*cursor).ok_or(ProofError::Truncated)?;
+    *cursor += 1;
+    let have = keccak(n);
+    if have.as_slice() != d {
+        let mut want = [0u8; 32];
+        want.copy_from_slice(d);
+        return Err(ProofError::HashMismatch { want, have });
+    }
+    Ok(n.clone())
+}
+
+fn rlp_bytes(r: &rlp::Rlp<'_>, i: usize) -> Result<Vec<u8>, ProofError> {
+    r.at(i)
+        .and_then(|x| x.data().map(<[u8]>::to_vec))
+        .map_err(|_| ProofError::MalformedNode)
+}
+
+pub fn verify(
+    root: &[u8; 32],
+    key: &[u8],
+    proof: &[Vec<u8>],
+) -> Result<Option<Vec<u8>>, ProofError> {
+    if proof.is_empty() {
+        return if *root == keccak(&[0x80]) {
+            Ok(None)
+        } else {
+            Err(ProofError::Truncated)
+        };
+    }
+
+    let nibbles = to_nibbles(key);
+    let mut suffix = &nibbles[..];
+    let mut cursor = 0usize;
+
+    let first = proof.get(cursor).ok_or(ProofError::Truncated)?;
+    cursor += 1;
+    let have = keccak(first);
+    if have != *root {
+        return Err(ProofError::HashMismatch { want: *root, have });
+    }
+    let mut current = first.clone();
+
+    let result = loop {
+        let r = rlp::Rlp::new(&current);
+        let count = r.item_count().map_err(|_| ProofError::MalformedNode)?;
+
+        if count == 17 {
+            // Fork.
+            let Some((&n, rest)) = suffix.split_first() else {
+                // Key consumed: the answer is the value slot.
+                let v = rlp_bytes(&r, 16)?;
+                break if v.is_empty() { None } else { Some(v) };
+            };
+            suffix = rest;
+
+            let item = r.at(n as usize).map_err(|_| ProofError::MalformedNode)?;
+            // Empty slot proves absence.
+            if item.is_data()
+                && item
+                    .data()
+                    .map_err(|_| ProofError::MalformedNode)?
+                    .is_empty()
+            {
+                break None;
+            }
+            current = resolve(item, proof, &mut cursor)?;
+        } else if count == 2 {
+            // Leaf or Skip, distinguished by the hex-prefix flag.
+            let encoded_path = rlp_bytes(&r, 0)?;
+            let (path, is_leaf) =
+                hex_prefix_decode(&encoded_path).map_err(|_| ProofError::MalformedNode)?;
+
+            if is_leaf {
+                break if suffix == &path[..] {
+                    Some(rlp_bytes(&r, 1)?)
+                } else {
+                    // Diverging leaf path proves absence.
+                    None
+                };
+            }
+
+            if !suffix.starts_with(&path) {
+                // Diverging skip path proves absence.
+                break None;
+            }
+            suffix = &suffix[path.len()..];
+
+            let item = r.at(1).map_err(|_| ProofError::MalformedNode)?;
+            current = resolve(item, proof, &mut cursor)?;
+        } else {
+            return Err(ProofError::MalformedNode);
+        }
+    };
+
+    // Canonicality: the proof must contain exactly the nodes the walk needed.
+    if cursor != proof.len() {
+        return Err(ProofError::TrailingNodes(proof.len() - cursor));
+    }
+    Ok(result)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProofError {
+    /// A node's keccak256 didn't match the reference its parent held (or the
+    /// root, at step 0). This is the core soundness check.
+    HashMismatch { want: [u8; 32], have: [u8; 32] },
+    /// The walk needed another node and the proof ran out.
+    Truncated,
+    /// Nodes left over after the walk terminated. Same canonicality reasoning
+    /// as `cursor == siblings.len()` in stage 1: a proof must be a canonical
+    /// object or anything that hashes or caches it inherits a malleability bug.
+    TrailingNodes(usize),
+    /// RLP that isn't a valid node: wrong item count, non-canonical encoding,
+    /// bad hex-prefix.
+    MalformedNode,
+    /// A child reference that is neither a 32-byte hash nor valid inline RLP.
+    BadNodeRef,
 }
 
 /*
@@ -129,12 +302,12 @@ Returns the node's RLP. Four arms:
 Null → vec![0x80]
 Leaf { path, value } → rlp([hp(path, true), value])
 Skip { path, child } → rlp([hp(path, false), node_ref(child)])
-Fork { children, value } → 17-item list: each child slot is node_ref(child) 
+Fork { children, value } → 17-item list: each child slot is node_ref(child)
     or the empty string "" when None, then the value or "" when None
 
 The important detail: a child slot holds either a 32-byte hash
 string or the child's RLP inlined as a nested structure.
-In RLP terms, a hash ref is Item::Bytes(&hash) which encodes with the 0xa0 prefix, 
+In RLP terms, a hash ref is Item::Bytes(&hash) which encodes with the 0xa0 prefix,
 while an inlined child is the child's already-encoded bytes spliced in raw.
 If your RLP API only takes Item, you may need a "pre-encoded raw" escape hatch.
 Decide how to express that before you write this function;
@@ -164,12 +337,18 @@ fn encode_node<H: Hasher>(node: &Node, db: &mut BTreeMap<H::Out, Vec<u8>>) -> Ve
             for c in children {
                 match c {
                     Some(c) => append_ref::<H>(&mut s, c, db),
-                    None => { s.append_empty_data(); }
+                    None => {
+                        s.append_empty_data();
+                    }
                 }
             }
             match value {
-                Some(v) => { s.append(&v.as_slice()); }
-                None => { s.append_empty_data(); }
+                Some(v) => {
+                    s.append(&v.as_slice());
+                }
+                None => {
+                    s.append_empty_data();
+                }
             }
             s.out().to_vec()
         }
@@ -179,19 +358,22 @@ fn encode_node<H: Hasher>(node: &Node, db: &mut BTreeMap<H::Out, Vec<u8>>) -> Ve
 fn append_ref<H: Hasher>(s: &mut RlpStream, node: &Node, db: &mut BTreeMap<H::Out, Vec<u8>>) {
     let enc = encode_node::<H>(node, db);
     if enc.len() < 32 {
-        s.append_raw(&enc, 1);          // already RLP, splice verbatim
+        s.append_raw(&enc, 1); // already RLP, splice verbatim
     } else {
         let h = H::hash_one(&enc);
         db.insert(h, enc);
-        s.append(&h.as_ref());          // 32-byte string, gets the 0xa0 prefix
+        s.append(&h.as_ref()); // 32-byte string, gets the 0xa0 prefix
     }
 }
 
 fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
     match node {
-        Node::Null => Node::Leaf { path: suffix_nibbles.to_vec(), value },
+        Node::Null => Node::Leaf {
+            path: suffix_nibbles.to_vec(),
+            value,
+        },
         Node::Leaf { path, value: old } => {
-            if &path == suffix_nibbles {
+            if path == suffix_nibbles {
                 return Node::Leaf { path, value };
             }
 
@@ -203,22 +385,37 @@ fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
             let mut slot = None;
 
             if let Some((&n, rest)) = new_rest.split_first() {
-                children[n as usize] = Some(Box::new(Node::Leaf { path: rest.to_vec(), value }));
+                children[n as usize] = Some(Box::new(Node::Leaf {
+                    path: rest.to_vec(),
+                    value,
+                }));
             } else {
                 slot = Some(value);
             }
 
             if let Some((&n, rest)) = old_rest.split_first() {
-                children[n as usize] = Some(Box::new(Node::Leaf { path: rest.to_vec(), value: old }));
+                children[n as usize] = Some(Box::new(Node::Leaf {
+                    path: rest.to_vec(),
+                    value: old,
+                }));
             } else {
                 slot = Some(old);
             }
 
-            skip_or(path[..common].to_vec(), Node::Fork { children, value: slot })
+            skip_or(
+                path[..common].to_vec(),
+                Node::Fork {
+                    children,
+                    value: slot,
+                },
+            )
         }
         Node::Skip { path, child } if suffix_nibbles.starts_with(&path) => {
             let child = insert_at(*child, &suffix_nibbles[path.len()..], value);
-            Node::Skip { path, child: Box::new(child) }
+            Node::Skip {
+                path,
+                child: Box::new(child),
+            }
         }
         Node::Skip { path, child } => {
             let common = common_prefix_len(&path, suffix_nibbles);
@@ -229,25 +426,44 @@ fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
             let mut slot = None;
 
             // !suffix_nibbles.starts_with(&path), hence common < path.len(), hence old_rest is non-empty
-            children[old_rest[0] as usize] = Some(Box::new(skip_or(old_rest[1..].to_vec(), *child)));
+            children[old_rest[0] as usize] =
+                Some(Box::new(skip_or(old_rest[1..].to_vec(), *child)));
 
             if let Some((&n, rest)) = new_rest.split_first() {
-                children[n as usize] = Some(Box::new(Node::Leaf { path: rest.to_vec(), value }));
+                children[n as usize] = Some(Box::new(Node::Leaf {
+                    path: rest.to_vec(),
+                    value,
+                }));
             } else {
                 slot = Some(value);
             }
 
-            skip_or(path[..common].to_vec(), Node::Fork { children, value: slot })
+            skip_or(
+                path[..common].to_vec(),
+                Node::Fork {
+                    children,
+                    value: slot,
+                },
+            )
         }
-        Node::Fork { mut children, value: current } => {
+        Node::Fork {
+            mut children,
+            value: current,
+        } => {
             if suffix_nibbles.is_empty() {
-                return Node::Fork { children, value: Some(value) };
+                return Node::Fork {
+                    children,
+                    value: Some(value),
+                };
             }
             let index = suffix_nibbles[0] as usize;
             let child = if let Some(child) = children[index].take() {
                 insert_at(*child, &suffix_nibbles[1..], value)
             } else {
-                Node::Leaf { path: suffix_nibbles[1..].to_vec(), value }
+                Node::Leaf {
+                    path: suffix_nibbles[1..].to_vec(),
+                    value,
+                }
             };
             children[index] = Some(Box::new(child));
             Node::Fork {
@@ -259,43 +475,69 @@ fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
 }
 
 fn skip_or(path: Vec<u8>, child: Node) -> Node {
-    if path.is_empty() { child } else { Node::Skip { path, child: Box::new(child) } }
+    if path.is_empty() {
+        child
+    } else {
+        Node::Skip {
+            path,
+            child: Box::new(child),
+        }
+    }
 }
 
 fn get_at<'a>(node: &'a Node, suffix_nibbles: &[u8]) -> Option<&'a [u8]> {
     match node {
-        Node::Leaf { path, value } if path == suffix_nibbles => 
-            Some(value.as_slice()),
-        Node::Skip { path, child } if suffix_nibbles.starts_with(path) => 
-            get_at(child, &suffix_nibbles[path.len()..]),
-        Node::Fork { value, .. } if suffix_nibbles.is_empty() =>
-            value.as_deref(),
-        Node::Fork { children, .. } =>
-            children[suffix_nibbles[0] as usize].as_ref()
-                .and_then(|c| get_at(c, &suffix_nibbles[1..])),
-        _ => None
+        Node::Leaf { path, value } if path == suffix_nibbles => Some(value.as_slice()),
+        Node::Skip { path, child } if suffix_nibbles.starts_with(path) => {
+            get_at(child, &suffix_nibbles[path.len()..])
+        }
+        Node::Fork { value, .. } if suffix_nibbles.is_empty() => value.as_deref(),
+        Node::Fork { children, .. } => children[suffix_nibbles[0] as usize]
+            .as_ref()
+            .and_then(|c| get_at(c, &suffix_nibbles[1..])),
+        _ => None,
     }
 }
 
 fn remove_at(node: Node, suffix_nibbles: &[u8]) -> (Node, bool) {
     match node {
-        Node::Leaf { ref path, .. } if path == suffix_nibbles => 
-            (Node::Null, true),
+        Node::Leaf { ref path, .. } if path == suffix_nibbles => (Node::Null, true),
         Node::Skip { path, child } if suffix_nibbles.starts_with(&path) => {
             let (child, removed) = remove_at(*child, &suffix_nibbles[path.len()..]);
             if !removed {
-                return (Node::Skip { path, child: Box::new(child) }, false);
+                return (
+                    Node::Skip {
+                        path,
+                        child: Box::new(child),
+                    },
+                    false,
+                );
             }
-            (normalize(Node::Skip { path, child: Box::new(child) }), true)
+            (
+                normalize(Node::Skip {
+                    path,
+                    child: Box::new(child),
+                }),
+                true,
+            )
         }
         Node::Fork { children, value } if suffix_nibbles.is_empty() => {
             let removed = value.is_some();
             if !removed {
                 return (Node::Fork { children, value }, false);
             }
-            (normalize(Node::Fork { children, value: None }), true)
+            (
+                normalize(Node::Fork {
+                    children,
+                    value: None,
+                }),
+                true,
+            )
         }
-        Node::Fork { mut children, value } => {
+        Node::Fork {
+            mut children,
+            value,
+        } => {
             let i = suffix_nibbles[0] as usize;
             let Some(child) = children[i].take() else {
                 return (Node::Fork { children, value }, false);
@@ -318,11 +560,17 @@ fn remove_at(node: Node, suffix_nibbles: &[u8]) -> (Node, bool) {
 /// whose subtree was just modified.
 fn normalize(node: Node) -> Node {
     match node {
-        Node::Fork { mut children, value } => {
+        Node::Fork {
+            mut children,
+            value,
+        } => {
             let occupied: Vec<usize> = (0..16).filter(|&i| children[i].is_some()).collect();
             match (occupied.len(), &value) {
                 // Only the value slot survives: a leaf with an empty path.
-                (0, Some(_)) => Node::Leaf { path: Vec::new(), value: value.unwrap() },
+                (0, Some(_)) => Node::Leaf {
+                    path: Vec::new(),
+                    value: value.unwrap(),
+                },
                 (0, None) => Node::Null,
                 // Exactly one child and no value: the fork disappears and its
                 // nibble index becomes a path prefix on the child.
@@ -341,13 +589,19 @@ fn normalize(node: Node) -> Node {
                 p.extend_from_slice(&cp);
                 Node::Leaf { path: p, value }
             }
-            Node::Skip { path: cp, child: gc } => {
+            Node::Skip {
+                path: cp,
+                child: gc,
+            } => {
                 let mut p = path;
                 p.extend_from_slice(&cp);
                 Node::Skip { path: p, child: gc }
             }
             Node::Null => Node::Null,
-            c => Node::Skip { path, child: Box::new(c) },
+            c => Node::Skip {
+                path,
+                child: Box::new(c),
+            },
         },
         other => other,
     }
@@ -367,7 +621,10 @@ fn prepend(n: u8, node: Node) -> Node {
             p.extend_from_slice(&path);
             Node::Skip { path: p, child }
         }
-        f @ Node::Fork { .. } => Node::Skip { path: [n].to_vec(), child: Box::new(f) },
+        f @ Node::Fork { .. } => Node::Skip {
+            path: [n].to_vec(),
+            child: Box::new(f),
+        },
         Node::Null => Node::Null,
     }
 }

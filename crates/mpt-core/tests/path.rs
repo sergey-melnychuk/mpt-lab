@@ -39,7 +39,11 @@ const VECTORS: &[(&[u8], bool, &[u8])] = &[
     (&[0x0f, 1, 0x0c, 0x0b, 8], LEAF, &[0x3f, 0x1c, 0xb8]),
     // Even length: flag nibble, then a zero pad nibble, then the path.
     (&[0, 1, 2, 3, 4, 5], EXT, &[0x00, 0x01, 0x23, 0x45]),
-    (&[0, 0x0f, 1, 0x0c, 0x0b, 8], LEAF, &[0x20, 0x0f, 0x1c, 0xb8]),
+    (
+        &[0, 0x0f, 1, 0x0c, 0x0b, 8],
+        LEAF,
+        &[0x20, 0x0f, 0x1c, 0xb8],
+    ),
     // Single nibble, both flavours: shortest odd case.
     (&[0], EXT, &[0x10]),
     (&[0x0f], LEAF, &[0x3f]),

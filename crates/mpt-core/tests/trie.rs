@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
-use mpt_core::trie::{Node, Trie};
 use mpt_core::Keccak256 as K;
+use mpt_core::trie::{Node, Trie};
 use proptest::prelude::*;
+use std::collections::BTreeMap;
 
 fn root_of(pairs: &[(&[u8], &[u8])]) -> [u8; 32] {
     built(pairs).hash()
@@ -65,11 +65,7 @@ fn classic_four_shape() {
     assert!(value.is_none(), "no key terminates at nibble [6]");
     assert!(children[4].is_some(), "the 'do*' subtree");
     assert!(children[8].is_some(), "the 'horse' leaf");
-    assert_eq!(
-        t.root().fork_occupancy(),
-        0,
-        "root is a Skip, not a Fork"
-    );
+    assert_eq!(t.root().fork_occupancy(), 0, "root is a Skip, not a Fork");
     // TODO: assert the rest yourself. Walk children[4] down and check where
     // "verb" and "puppy" land (value slots, not leaves) and what shape the
     // "doge" tail takes.
@@ -99,10 +95,7 @@ fn empty_key() {
 #[test]
 fn diverge_at_first_nibble() {
     let t = built(&[(b"\x01", b"one"), (b"\x81", b"two")]);
-    assert!(
-        matches!(t.root(), Node::Fork { .. }),
-        "no shared prefix"
-    );
+    assert!(matches!(t.root(), Node::Fork { .. }), "no shared prefix");
     assert_eq!(t.get(b"\x01"), Some(&b"one"[..]));
     assert_eq!(t.get(b"\x81"), Some(&b"two"[..]));
 }
@@ -211,7 +204,10 @@ fn fork_collapses_to_leaf_when_one_child_remains() {
     let mut t = built(&[(b"\x01", b"a"), (b"\x81", b"b")]);
     assert!(t.remove(b"\x81"));
     t.root().debug_check();
-    assert_eq!(hex::encode(t.hash()), hex::encode(root_of(&[(b"\x01", b"a")])));
+    assert_eq!(
+        hex::encode(t.hash()),
+        hex::encode(root_of(&[(b"\x01", b"a")]))
+    );
 }
 
 #[test]
@@ -222,7 +218,10 @@ fn fork_collapses_to_leaf_when_only_the_value_slot_remains() {
     let mut t = built(&[(b"ab", b"short"), (b"abc", b"long")]);
     assert!(t.remove(b"abc"));
     t.root().debug_check();
-    assert_eq!(hex::encode(t.hash()), hex::encode(root_of(&[(b"ab", b"short")])));
+    assert_eq!(
+        hex::encode(t.hash()),
+        hex::encode(root_of(&[(b"ab", b"short")]))
+    );
 }
 
 #[test]
@@ -271,7 +270,10 @@ fn multi_level_collapse_propagates_upward() {
     t.root().debug_check();
     assert_eq!(
         hex::encode(t.hash()),
-        hex::encode(root_of(&[(b"\x11\x11\x11\x11", b"deep"), (b"\x99", b"far")]))
+        hex::encode(root_of(&[
+            (b"\x11\x11\x11\x11", b"deep"),
+            (b"\x99", b"far")
+        ]))
     );
 }
 
@@ -298,12 +300,12 @@ fn collapse_across_the_inlining_boundary() {
 fn removing_absent_keys_is_a_no_op() {
     let base = root_of(CLASSIC);
     for absent in [
-        &b"cat"[..],   // diverges immediately
-        b"d",          // prefix, no value there
-        b"dogecoin",   // extends past an existing leaf
-        b"hors",       // prefix of "horse"
-        b"",           // empty key, absent
-        b"doge\x00",   // one nibble past a leaf
+        &b"cat"[..], // diverges immediately
+        b"d",        // prefix, no value there
+        b"dogecoin", // extends past an existing leaf
+        b"hors",     // prefix of "horse"
+        b"",         // empty key, absent
+        b"doge\x00", // one nibble past a leaf
     ] {
         let mut t = built(CLASSIC);
         assert!(!t.remove(absent), "remove({absent:?}) claimed success");
@@ -321,10 +323,7 @@ fn remove_from_empty_trie() {
     let mut t = Trie::<K>::new();
     assert!(!t.remove(b"anything"));
     assert!(!t.remove(b""));
-    assert_eq!(
-        hex::encode(t.hash()),
-        hex::encode(Trie::<K>::new().hash())
-    );
+    assert_eq!(hex::encode(t.hash()), hex::encode(Trie::<K>::new().hash()));
 }
 
 #[test]
@@ -347,7 +346,10 @@ fn empty_key_removal() {
     t.root().debug_check();
     assert_eq!(t.get(b""), None);
     assert_eq!(t.get(b"a"), Some(&b"other"[..]));
-    assert_eq!(hex::encode(t.hash()), hex::encode(root_of(&[(b"a", b"other")])));
+    assert_eq!(
+        hex::encode(t.hash()),
+        hex::encode(root_of(&[(b"a", b"other")]))
+    );
 }
 
 fn kv_map() -> impl Strategy<Value = BTreeMap<Vec<u8>, Vec<u8>>> {

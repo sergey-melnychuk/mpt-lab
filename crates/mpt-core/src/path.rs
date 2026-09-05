@@ -21,14 +21,16 @@ pub fn to_nibbles(bytes: &[u8]) -> Vec<u8> {
 
 /// Pack nibbles back into bytes. Rejects odd length and values above 0x0f.
 pub fn from_nibbles(nibbles: &[u8]) -> Result<Vec<u8>, Error> {
-    if nibbles.len() % 2 != 0 {
+    if !nibbles.len().is_multiple_of(2) {
         return Err(Error::OddNibbleLength);
     }
     if nibbles.iter().any(|&n| n > 0x0f) {
         return Err(Error::InvalidNibble);
     }
     Ok(nibbles
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| (p[0] << 4) | p[1])
         .collect())
 }
