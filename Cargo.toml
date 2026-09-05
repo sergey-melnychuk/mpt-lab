@@ -4,9 +4,10 @@ resolver = "3"
 
 [workspace.package]
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [workspace.dependencies]
 sha3 = { version = "0.10", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 proptest = "1"
+thiserror = { version = "2.0", default-features = false }

@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use alloc::{boxed::Box, collections::BTreeMap};
 use rlp::RlpStream;
+use thiserror::Error;
 
 use crate::hasher::keccak;
 use crate::path::{hex_prefix_decode, hex_prefix_encode};
@@ -13,25 +14,32 @@ use crate::{
 /// owned pointers, not hash references. Stage 5 replaces Box<Node> with a
 /// reference type and adds Merkleization.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum Node {
+pub enum Node<H: Hasher> {
     /// Yellow paper: the empty node. RLP-encoded as the empty string.
     #[default]
     Null,
     /// Yellow paper: leaf node. `rlp([hp(path, true), value])`.
     /// `path` is the remaining key suffix at this point.
-    Leaf { path: Vec<u8>, value: Vec<u8> },
+    Leaf {
+        path: Vec<u8>,
+        value: Vec<u8>,
+    },
     /// Yellow paper: **extension** node. `rlp([hp(path, false), child_ref])`.
     /// INVARIANT: `path` is never empty, and `child` is always a `Fork`.
-    Skip { path: Vec<u8>, child: Box<Node> },
+    Skip {
+        path: Vec<u8>,
+        child: Box<Node<H>>,
+    },
     /// Yellow paper: branch node. 17-item RLP list.
     /// `value` is set when a key terminates exactly here.
     Fork {
-        children: [Option<Box<Node>>; 16],
+        children: [Option<Box<Node<H>>>; 16],
         value: Option<Vec<u8>>,
     },
+    Stub(H::Out),
 }
 
-impl Node {
+impl<H: Hasher + core::fmt::Debug> Node<H> {
     pub fn empty_fork() -> Self {
         Node::Fork {
             children: core::array::from_fn(|_| None),
@@ -61,7 +69,7 @@ impl Node {
             Node::Null => {
                 assert!(is_root, "Null may only appear as the whole trie's root");
             }
-            Node::Leaf { .. } => {}
+            Node::Leaf { .. } | Node::Stub(_) => {}
             Node::Skip { path, child } => {
                 assert!(!path.is_empty(), "Skip path must be non-empty");
                 assert!(
@@ -86,7 +94,7 @@ impl Node {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Trie<H: Hasher> {
-    root: Node,
+    root: Node<H>,
     db: BTreeMap<H::Out, Vec<u8>>, // hash -> rlp(node), for nodes >= 32 bytes
 }
 
@@ -98,7 +106,14 @@ impl<H: Hasher> Trie<H> {
         }
     }
 
-    pub fn root(&self) -> &Node {
+    pub fn from_node(root: Node<H>) -> Self {
+        Self {
+            root,
+            db: Default::default(),
+        }
+    }
+
+    pub fn root(&self) -> &Node<H> {
         &self.root
     }
 
@@ -135,7 +150,7 @@ impl<H: Hasher> Trie<H> {
 }
 
 fn collect<H: Hasher>(
-    node: &Node,
+    node: &Node<H>,
     suffix: &[u8],
     out: &mut Vec<Vec<u8>>,
     db: &mut BTreeMap<H::Out, Vec<u8>>,
@@ -146,7 +161,7 @@ fn collect<H: Hasher>(
         out.push(enc);
     }
     match node {
-        Node::Null | Node::Leaf { .. } => {}
+        Node::Null | Node::Leaf { .. } | Node::Stub(_) => {}
         Node::Skip { path, child } => {
             if suffix.starts_with(path) {
                 collect::<H>(child, &suffix[path.len()..], out, db, false);
@@ -278,7 +293,7 @@ pub fn verify(
     Ok(result)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ProofError {
     /// A node's keccak256 didn't match the reference its parent held (or the
     /// root, at step 0). This is the core soundness check.
@@ -294,6 +309,12 @@ pub enum ProofError {
     MalformedNode,
     /// A child reference that is neither a 32-byte hash nor valid inline RLP.
     BadNodeRef,
+}
+
+impl core::fmt::Display for ProofError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 
 /*
@@ -313,7 +334,7 @@ If your RLP API only takes Item, you may need a "pre-encoded raw" escape hatch.
 Decide how to express that before you write this function;
 it's the one place your stage 2 API design gets tested.
 */
-fn encode_node<H: Hasher>(node: &Node, db: &mut BTreeMap<H::Out, Vec<u8>>) -> Vec<u8> {
+fn encode_node<H: Hasher>(node: &Node<H>, db: &mut BTreeMap<H::Out, Vec<u8>>) -> Vec<u8> {
     match node {
         Node::Null => {
             let mut s = RlpStream::new();
@@ -352,10 +373,15 @@ fn encode_node<H: Hasher>(node: &Node, db: &mut BTreeMap<H::Out, Vec<u8>>) -> Ve
             }
             s.out().to_vec()
         }
+        Node::Stub(hash) => hash.as_ref().to_vec(),
     }
 }
 
-fn append_ref<H: Hasher>(s: &mut RlpStream, node: &Node, db: &mut BTreeMap<H::Out, Vec<u8>>) {
+fn append_ref<H: Hasher>(s: &mut RlpStream, node: &Node<H>, db: &mut BTreeMap<H::Out, Vec<u8>>) {
+    if let Node::Stub(h) = node {
+        s.append(&h.as_ref());
+        return;
+    }
     let enc = encode_node::<H>(node, db);
     if enc.len() < 32 {
         s.append_raw(&enc, 1); // already RLP, splice verbatim
@@ -366,7 +392,7 @@ fn append_ref<H: Hasher>(s: &mut RlpStream, node: &Node, db: &mut BTreeMap<H::Ou
     }
 }
 
-fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
+fn insert_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8], value: Vec<u8>) -> Node<H> {
     match node {
         Node::Null => Node::Leaf {
             path: suffix_nibbles.to_vec(),
@@ -381,7 +407,7 @@ fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
             let new_rest = &suffix_nibbles[common..];
             let old_rest = &path[common..];
 
-            let mut children: [Option<Box<Node>>; 16] = core::array::from_fn(|_| None);
+            let mut children: [Option<Box<Node<H>>>; 16] = core::array::from_fn(|_| None);
             let mut slot = None;
 
             if let Some((&n, rest)) = new_rest.split_first() {
@@ -422,7 +448,7 @@ fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
             let new_rest = &suffix_nibbles[common..];
             let old_rest = &path[common..];
 
-            let mut children: [Option<Box<Node>>; 16] = core::array::from_fn(|_| None);
+            let mut children: [Option<Box<Node<H>>>; 16] = core::array::from_fn(|_| None);
             let mut slot = None;
 
             // !suffix_nibbles.starts_with(&path), hence common < path.len(), hence old_rest is non-empty
@@ -471,10 +497,11 @@ fn insert_at(node: Node, suffix_nibbles: &[u8], value: Vec<u8>) -> Node {
                 value: current,
             }
         }
+        stub => stub,
     }
 }
 
-fn skip_or(path: Vec<u8>, child: Node) -> Node {
+fn skip_or<H: Hasher>(path: Vec<u8>, child: Node<H>) -> Node<H> {
     if path.is_empty() {
         child
     } else {
@@ -485,7 +512,7 @@ fn skip_or(path: Vec<u8>, child: Node) -> Node {
     }
 }
 
-fn get_at<'a>(node: &'a Node, suffix_nibbles: &[u8]) -> Option<&'a [u8]> {
+fn get_at<'a, H: Hasher>(node: &'a Node<H>, suffix_nibbles: &[u8]) -> Option<&'a [u8]> {
     match node {
         Node::Leaf { path, value } if path == suffix_nibbles => Some(value.as_slice()),
         Node::Skip { path, child } if suffix_nibbles.starts_with(path) => {
@@ -499,7 +526,7 @@ fn get_at<'a>(node: &'a Node, suffix_nibbles: &[u8]) -> Option<&'a [u8]> {
     }
 }
 
-fn remove_at(node: Node, suffix_nibbles: &[u8]) -> (Node, bool) {
+fn remove_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8]) -> (Node<H>, bool) {
     match node {
         Node::Leaf { ref path, .. } if path == suffix_nibbles => (Node::Null, true),
         Node::Skip { path, child } if suffix_nibbles.starts_with(&path) => {
@@ -558,7 +585,7 @@ fn remove_at(node: Node, suffix_nibbles: &[u8]) -> (Node, bool) {
 
 /// Restore canonical shape after a child changed. Only meaningful on a node
 /// whose subtree was just modified.
-fn normalize(node: Node) -> Node {
+fn normalize<H: Hasher>(node: Node<H>) -> Node<H> {
     match node {
         Node::Fork {
             mut children,
@@ -609,7 +636,7 @@ fn normalize(node: Node) -> Node {
 
 /// Push nibble `n` onto the front of `node`'s path, wrapping in a Skip when
 /// the node has no path of its own.
-fn prepend(n: u8, node: Node) -> Node {
+fn prepend<H: Hasher>(n: u8, node: Node<H>) -> Node<H> {
     match node {
         Node::Leaf { path, value } => {
             let mut p = [n].to_vec();
@@ -626,5 +653,105 @@ fn prepend(n: u8, node: Node) -> Node {
             child: Box::new(f),
         },
         Node::Null => Node::Null,
+        stub => stub,
+    }
+}
+
+/// Decode one node's RLP into a `Node`.
+///
+/// Child references resolve against `nodes` when present and become `Stub`
+/// when not. Inlined children (a nested RLP list rather than a 32-byte string)
+/// are decoded in place and are never stubs — they came along inside their
+/// parent's bytes for free.
+pub fn decode_node<H: Hasher>(nodes: &BTreeMap<H::Out, Vec<u8>>, bytes: &[u8]) -> Node<H> {
+    let r = rlp::Rlp::new(bytes);
+    let count = r.item_count().expect("node must be an RLP list");
+
+    if count == 17 {
+        let mut children: [Option<Box<Node<H>>>; 16] = core::array::from_fn(|_| None);
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..16 {
+            let item = r.at(i).unwrap();
+            if item.is_data() {
+                let d = item.data().unwrap();
+                if d.is_empty() {
+                    continue; // genuinely absent child
+                }
+                if d.len() != H::LENGTH {
+                    panic!(
+                        "child reference is {} bytes, expected {}",
+                        d.len(),
+                        H::LENGTH
+                    );
+                }
+                let mut h = H::Out::default();
+                h.as_mut().copy_from_slice(d);
+                children[i] = Some(Box::new(build_partial(nodes, &h)));
+            } else {
+                children[i] = Some(Box::new(decode_node(nodes, item.as_raw())));
+            }
+        }
+        let v = r.at(16).unwrap().data().unwrap().to_vec();
+        Node::Fork {
+            children,
+            value: if v.is_empty() { None } else { Some(v) },
+        }
+    } else if count == 2 {
+        let encoded_path = r.at(0).unwrap().data().unwrap().to_vec();
+        let (path, is_leaf) = hex_prefix_decode(&encoded_path).expect("bad hex-prefix");
+        if is_leaf {
+            Node::Leaf {
+                path,
+                value: r.at(1).unwrap().data().unwrap().to_vec(),
+            }
+        } else {
+            let item = r.at(1).unwrap();
+            let child = if item.is_data() {
+                let d = item.data().unwrap();
+                if d.len() != H::LENGTH {
+                    panic!(
+                        "child reference is {} bytes, expected {}",
+                        d.len(),
+                        H::LENGTH
+                    );
+                }
+                let mut h = H::Out::default();
+                h.as_mut().copy_from_slice(d);
+                build_partial(nodes, &h)
+            } else {
+                decode_node(nodes, item.as_raw())
+            };
+            Node::Skip {
+                path,
+                child: Box::new(child),
+            }
+        }
+    } else {
+        panic!("node has {count} items, expected 2 or 17")
+    }
+}
+
+/// Rebuild a partial trie rooted at `root` from a hash-indexed node set.
+/// A root we don't have becomes a bare `Stub`.
+pub fn build_partial<H: Hasher>(nodes: &BTreeMap<H::Out, Vec<u8>>, root: &H::Out) -> Node<H> {
+    match nodes.get(root) {
+        Some(bytes) => decode_node(nodes, bytes),
+        None => Node::Stub(*root),
+    }
+}
+
+/// keccak256(rlp(node)) — the root hash of a trie rooted at this node.
+pub fn node_root<H: Hasher>(node: &Node<H>) -> H::Out {
+    let mut db = BTreeMap::new();
+    H::hash_all(&[&encode_node::<H>(node, &mut db)])
+}
+
+/// How much of the trie we don't have. Diagnostics only.
+pub fn count_stubs<H: Hasher>(node: &Node<H>) -> usize {
+    match node {
+        Node::Stub(_) => 1,
+        Node::Skip { child, .. } => count_stubs(child),
+        Node::Fork { children, .. } => children.iter().flatten().map(|c| count_stubs(c)).sum(),
+        Node::Null | Node::Leaf { .. } => 0,
     }
 }

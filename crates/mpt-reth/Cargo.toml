@@ -1,0 +1,32 @@
+[package]
+name = "mpt-reth"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# reth 2.5.1 requires rust-version 1.95.
+#
+# reth is NOT usefully published to crates.io (the `reth-*` crates there are
+# 0.0.0 placeholders), so pin the git tag. Note this pulls a large dependency
+# tree — expect a long first build.
+#
+# Keep this crate OUT of the main workspace's default members, or `cargo test`
+# at the root will build all of reth. Either add it as a separate workspace, or
+# in the root Cargo.toml:
+#
+#     [workspace]
+#     members  = ["crates/mpt-core"]
+#     exclude  = ["crates/mpt-reth"]
+
+[dependencies]
+mpt-core = { path = "../mpt-core" }
+
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v2.5.1", features = ["node"] }
+alloy-primitives = "1"
+
+rlp = "0.6"
+hex = "0.4"
+eyre = "0.6"
+
+[profile.release]
+debug = true
