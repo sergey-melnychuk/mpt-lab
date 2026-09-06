@@ -1,7 +1,7 @@
 //! Verify a real Ethereum account and one of its storage slots, chaining from
 //! a block's `stateRoot` down, using nothing but this crate plus `rlp` and
-//! `hex`. `reqwest` is the transport and `serde_json` parses the JSON-RPC
-//! envelope.
+//! `hex`. `reqwest` is the transport, `serde_json` parses the JSON-RPC
+//! envelope and `eyre` carries errors.
 //!
 //!     cargo run --example live
 //!     cargo run --example live -- <address> <slot> [block]
@@ -32,6 +32,7 @@
 
 use std::collections::BTreeMap;
 
+use eyre::{ContextCompat, Result};
 use mpt_core::{
     Keccak256,
     hasher::keccak,
@@ -54,11 +55,9 @@ const DEFAULT_ADDR: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const DEFAULT_SLOT: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 const DEFAULT_BLOCK: &str = "0x1400000";
 
-type Err = Box<dyn std::error::Error>;
-
 /// JSON-RPC *quantities* are minimal-width, so a nonce of 1 arrives as "0x1" —
 /// odd-length hex, which `hex::decode` rejects outright. Pad it.
-fn unhex(s: &str) -> Result<Vec<u8>, Err> {
+fn unhex(s: &str) -> Result<Vec<u8>> {
     let h = s.trim_start_matches("0x");
     Ok(if h.len() % 2 == 1 {
         hex::decode(format!("0{h}"))?
@@ -67,11 +66,9 @@ fn unhex(s: &str) -> Result<Vec<u8>, Err> {
     })
 }
 
-fn h32(s: &str) -> Result<[u8; 32], Err> {
+fn h32(s: &str) -> Result<[u8; 32]> {
     let v = unhex(s)?;
-    if v.len() != 32 {
-        return Err(format!("expected 32 bytes, got {}", v.len()).into());
-    }
+    eyre::ensure!(v.len() == 32, "expected 32 bytes, got {}", v.len());
     let mut a = [0u8; 32];
     a.copy_from_slice(&v);
     Ok(a)
@@ -95,7 +92,7 @@ async fn rpc(
     url: &str,
     method: &str,
     params: serde_json::Value,
-) -> Result<serde_json::Value, Err> {
+) -> Result<serde_json::Value> {
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
     });
@@ -103,11 +100,11 @@ async fn rpc(
     // println!(">>>\n{}", serde_json::to_string_pretty(&body).unwrap());
     // println!("<<<\n{}", serde_json::to_string_pretty(&resp).unwrap());
     if let Some(e) = resp.get("error") {
-        return Err(format!("{method}: {e}").into());
+        eyre::bail!("{method}: {e}");
     }
     resp.get("result")
         .cloned()
-        .ok_or_else(|| format!("{method}: no result").into())
+        .ok_or_else(|| eyre::eyre!("{method}: no result"))
 }
 
 /// One line per proof node. Leaf and Skip are both 2-item RLP lists;
@@ -142,7 +139,7 @@ fn dump(proof: &[Vec<u8>]) {
 
 /// Rebuild a trie from proof nodes alone and confirm it re-derives `root`.
 /// Returns the stub count: how much of the trie we do NOT have.
-fn reconstruct(label: &str, proof: &[Vec<u8>], root: &[u8; 32]) -> Result<usize, Err> {
+fn reconstruct(label: &str, proof: &[Vec<u8>], root: &[u8; 32]) -> Result<usize> {
     let mut nodes: BTreeMap<[u8; 32], Vec<u8>> = BTreeMap::new();
     for n in proof {
         nodes.insert(keccak(n), n.clone());
@@ -159,19 +156,17 @@ fn reconstruct(label: &str, proof: &[Vec<u8>], root: &[u8; 32]) -> Result<usize,
         stubs
     );
 
-    if recomputed != *root {
-        return Err(format!(
-            "{label}: reconstruction gave {} but the root is {}",
-            hex::encode(recomputed),
-            hex::encode(root)
-        )
-        .into());
-    }
+    eyre::ensure!(
+        recomputed == *root,
+        "{label}: reconstruction gave {} but the root is {}",
+        hex::encode(recomputed),
+        hex::encode(root)
+    );
     Ok(stubs)
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Err> {
+async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let addr_hex = args.first().map(String::as_str).unwrap_or(DEFAULT_ADDR);
     let slot_hex = args.get(1).map(String::as_str).unwrap_or(DEFAULT_SLOT);
@@ -181,7 +176,7 @@ async fn main() -> Result<(), Err> {
 
     // Try endpoints until one serves both the header and the proof.
     // Endpoints without archive state will fail on a pinned historical block.
-    let mut last: Option<Err> = None;
+    let mut last: Option<eyre::Report> = None;
     let (url, header, proof) = 'found: {
         for url in RPCS {
             let attempt = async {
@@ -199,7 +194,7 @@ async fn main() -> Result<(), Err> {
                     serde_json::json!([addr_hex, [slot_hex], block]),
                 )
                 .await?;
-                Ok::<_, Err>((header, proof))
+                Ok::<_, eyre::Report>((header, proof))
             };
             match attempt.await {
                 Ok((h, p)) => break 'found (*url, h, p),
@@ -209,14 +204,14 @@ async fn main() -> Result<(), Err> {
                 }
             }
         }
-        return Err(last.unwrap_or_else(|| "no endpoints configured".into()));
+        return Err(last.unwrap_or_else(|| eyre::eyre!("no endpoints configured")));
     };
 
     println!("proof: {}", serde_json::to_string_pretty(&proof).unwrap());
     // println!("block: {}", serde_json::to_string_pretty(&header).unwrap());
 
-    let state_root = h32(header["stateRoot"].as_str().ok_or("no stateRoot")?)?;
-    let addr = unhex(proof["address"].as_str().ok_or("no address")?)?;
+    let state_root = h32(header["stateRoot"].as_str().context("no stateRoot")?)?;
+    let addr = unhex(proof["address"].as_str().context("no address")?)?;
 
     println!("rpc      {url}");
     println!("block    {block}");
@@ -228,25 +223,60 @@ async fn main() -> Result<(), Err> {
     // storage trie
     // ------------------------------------------------------------------
 
-    let storage_root = h32(proof["storageHash"].as_str().ok_or("no storageHash")?)?;
+    let storage_root = h32(proof["storageHash"].as_str().context("no storageHash")?)?;
     let sp = &proof["storageProof"][0];
-    let slot = unhex(sp["key"].as_str().ok_or("no slot key")?)?;
-    let value = unhex(sp["value"].as_str().ok_or("no slot value")?)?;
-    let storage_proof: Vec<Vec<u8>> = sp["proof"]
+    let slot = unhex(sp["key"].as_str().context("no slot key")?)?;
+    let value = unhex(sp["value"].as_str().context("no slot value")?)?;
+    let mut storage_proof: Vec<Vec<u8>> = sp["proof"]
         .as_array()
-        .ok_or("no storage proof")?
+        .context("no storage proof")?
         .iter()
         .map(|n| unhex(n.as_str().unwrap_or_default()))
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<_>>()?;
+    // Some clients hand back the empty trie as a lone 0x80 node — rlp(Null) —
+    // rather than no nodes at all. `verify` expects the latter, and 0x80 can
+    // never be a real proof node: every node is a 2- or 17-item list.
+    storage_proof.retain(|n| n.as_slice() != [0x80]);
 
     println!("STORAGE TRIE   root {}", hex::encode(storage_root));
+    // Storage tries are "secure": the key is keccak256(slot), not the slot.
+    let skey = keccak(&slot);
     if storage_proof.is_empty() {
-        // An account with no storage has storageRoot == keccak256(rlp("")),
-        // and eth_getProof returns no nodes at all.
-        println!("  (empty — this account has no storage)");
+        // An account with no storage has storageRoot == keccak256(rlp("")) and
+        // the proof carries no nodes. That is no reason to skip: the root fully
+        // determines the trie, so we can still reconstruct it and prove the
+        // slot absent. See PTRIE.md §7.
+        eyre::ensure!(
+            storage_root == keccak(&[0x80]),
+            "empty proof but storageRoot is {} — expected the empty-trie constant",
+            hex::encode(storage_root)
+        );
+        println!("  (no storage — root is the empty-trie constant)");
+
+        // build_partial special-cases this root to Null rather than an
+        // unresolvable Stub: rlp(Null) is 0x80, a byte we already have.
+        let partial: Node<Keccak256> = build_partial(&BTreeMap::new(), &storage_root);
+        eyre::ensure!(
+            matches!(partial, Node::Null),
+            "empty root did not rebuild as Null"
+        );
+        eyre::ensure!(
+            node_root(&partial) == storage_root,
+            "Null did not re-derive the root"
+        );
+        println!("  reconstruct  OK   0 node(s), 0 stub(s)");
+
+        // An empty trie proves EVERY key absent — the exclusion case from
+        // stage 7, arriving on real state.
+        match verify(&storage_root, &skey, &storage_proof)? {
+            None => println!("  verify       OK  slot provably absent"),
+            Some(v) => eyre::bail!("empty trie returned a value: 0x{}", hex::encode(v)),
+        }
+        eyre::ensure!(
+            value.is_empty() || value == [0],
+            "RPC reported a value for an empty trie"
+        );
     } else {
-        // Storage tries are "secure": the key is keccak256(slot), not the slot.
-        let skey = keccak(&slot);
         println!("  key   keccak(slot) {}", hex::encode(skey));
         println!("  value 0x{}", hex::encode(&value));
         dump(&storage_proof);
@@ -254,8 +284,8 @@ async fn main() -> Result<(), Err> {
         // The trie holds rlp(value), not the raw 32-byte word.
         match verify(&storage_root, &skey, &storage_proof)? {
             Some(v) if v == rlp_bytes(&value) => println!("  verify       OK  value matches"),
-            Some(v) => return Err(format!("storage value mismatch: 0x{}", hex::encode(v)).into()),
-            None => return Err("storage proof says absent, but a value was reported".into()),
+            Some(v) => eyre::bail!("storage value mismatch: 0x{}", hex::encode(v)),
+            None => eyre::bail!("storage proof says absent, but a value was reported"),
         }
         reconstruct("storage", &storage_proof, &storage_root)?;
     }
@@ -266,17 +296,17 @@ async fn main() -> Result<(), Err> {
 
     let account_proof: Vec<Vec<u8>> = proof["accountProof"]
         .as_array()
-        .ok_or("no account proof")?
+        .context("no account proof")?
         .iter()
         .map(|n| unhex(n.as_str().unwrap_or_default()))
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<_>>()?;
 
     // Rebuild the account value ourselves rather than trusting the RPC's
     // fields. `storage_root` here is the value reconstruct() just re-derived,
     // which is what links the two levels.
-    let nonce = strip_zeros(unhex(proof["nonce"].as_str().ok_or("no nonce")?)?);
-    let balance = strip_zeros(unhex(proof["balance"].as_str().ok_or("no balance")?)?);
-    let code_hash = h32(proof["codeHash"].as_str().ok_or("no codeHash")?)?;
+    let nonce = strip_zeros(unhex(proof["nonce"].as_str().context("no nonce")?)?);
+    let balance = strip_zeros(unhex(proof["balance"].as_str().context("no balance")?)?);
+    let code_hash = h32(proof["codeHash"].as_str().context("no codeHash")?)?;
 
     let account_rlp = {
         let mut s = rlp::RlpStream::new_list(4);
@@ -300,15 +330,12 @@ async fn main() -> Result<(), Err> {
 
     match verify(&state_root, &akey, &account_proof)? {
         Some(v) if v == account_rlp => println!("  verify       OK  account tuple matches"),
-        Some(v) => {
-            return Err(format!(
-                "account mismatch\n    ours   {}\n    proof  {}",
-                hex::encode(&account_rlp),
-                hex::encode(v)
-            )
-            .into());
-        }
-        None => return Err("account proof says the account is absent".into()),
+        Some(v) => eyre::bail!(
+            "account mismatch\n    ours   {}\n    proof  {}",
+            hex::encode(&account_rlp),
+            hex::encode(v)
+        ),
+        None => eyre::bail!("account proof says the account is absent"),
     }
     let stubs = reconstruct("account", &account_proof, &state_root)?;
 
@@ -330,7 +357,7 @@ async fn main() -> Result<(), Err> {
     // Change the slot value and re-derive both roots without ever holding the
     // full trie. Every node whose encoding changes lies on the path from the
     // root to the modified leaf, and the proof IS that path — so this needs no
-    // NodeProvider. See PARTIAL_TRIE.md §7.
+    // NodeProvider. See PTRIE.md §7.
     //
     // Note the nesting: the new storageRoot is not just printed, it goes into
     // field 2 of the account tuple, which changes the account's leaf, which
@@ -354,7 +381,7 @@ async fn main() -> Result<(), Err> {
         snodes.insert(keccak(n), n.clone());
     }
     let mut storage_trie = Trie::<Keccak256>::from_node(build_partial(&snodes, &storage_root));
-    storage_trie.insert(&keccak(&slot), rlp_bytes(&new_value));
+    storage_trie.insert(&skey, rlp_bytes(&new_value));
     let storage_root2 = storage_trie.hash();
     println!(
         "  storageRoot  {}\n            -> {}",
@@ -387,15 +414,23 @@ async fn main() -> Result<(), Err> {
 
     // Put both back. A partial trie is canonical or it is nothing: restoring
     // the original values must restore the original roots byte-for-byte, or
-    // some node re-encoded differently than it did on the way in.
-    storage_trie.insert(&keccak(&slot), rlp_bytes(&value));
-    if storage_trie.hash() != storage_root {
-        return Err("reverting the slot did not restore the storage root".into());
+    // some node re-encoded differently than it did on the way in. A zero slot
+    // is not stored — Ethereum deletes it — so "back" for an absent slot means
+    // removing the key, not writing rlp(0).
+    if value.iter().any(|&b| b != 0) {
+        storage_trie.insert(&skey, rlp_bytes(&value));
+    } else {
+        storage_trie.remove(&skey);
     }
+    eyre::ensure!(
+        storage_trie.hash() == storage_root,
+        "reverting the slot did not restore the storage root"
+    );
     account_trie.insert(&akey, account_rlp);
-    if account_trie.hash() != state_root {
-        return Err("reverting the account did not restore the state root".into());
-    }
+    eyre::ensure!(
+        account_trie.hash() == state_root,
+        "reverting the account did not restore the state root"
+    );
     println!("  revert       OK  both roots restored exactly");
 
     Ok(())

@@ -497,7 +497,9 @@ fn insert_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8], value: Vec<u8>) ->
                 value: current,
             }
         }
-        stub => stub,
+        Node::Stub(h) => {
+            panic!("insert reached Stub({})", hex::encode(h))
+        }
     }
 }
 
@@ -579,7 +581,10 @@ fn remove_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8]) -> (Node<H>, bool)
             }
             (normalize(Node::Fork { children, value }), true)
         }
-        other => (other, false),
+        Node::Stub(h) => {
+            panic!("remove reached Stub({})", hex::encode(h))
+        }
+        node => (node, false),
     }
 }
 
@@ -630,7 +635,10 @@ fn normalize<H: Hasher>(node: Node<H>) -> Node<H> {
                 child: Box::new(c),
             },
         },
-        other => other,
+        Node::Stub(h) => {
+            panic!("normalize reached Stub({})", hex::encode(h))
+        }
+        node => node,
     }
 }
 
@@ -653,7 +661,9 @@ fn prepend<H: Hasher>(n: u8, node: Node<H>) -> Node<H> {
             child: Box::new(f),
         },
         Node::Null => Node::Null,
-        stub => stub,
+        Node::Stub(h) => {
+            panic!("prepend reached Stub({})", hex::encode(h))
+        }
     }
 }
 
@@ -734,6 +744,12 @@ pub fn decode_node<H: Hasher>(nodes: &BTreeMap<H::Out, Vec<u8>>, bytes: &[u8]) -
 /// Rebuild a partial trie rooted at `root` from a hash-indexed node set.
 /// A root we don't have becomes a bare `Stub`.
 pub fn build_partial<H: Hasher>(nodes: &BTreeMap<H::Out, Vec<u8>>, root: &H::Out) -> Node<H> {
+    // The empty trie is fully determined by its root: rlp(Null) is 0x80, whose
+    // keccak IS the empty-trie constant. A witness never carries it, and a Stub
+    // here would be unresolvable — there is no node to fetch.
+    if *root == H::hash_all(&[&[0x80]]) {
+        return Node::Null;
+    }
     match nodes.get(root) {
         Some(bytes) => decode_node(nodes, bytes),
         None => Node::Stub(*root),
@@ -742,6 +758,11 @@ pub fn build_partial<H: Hasher>(nodes: &BTreeMap<H::Out, Vec<u8>>, root: &H::Out
 
 /// keccak256(rlp(node)) — the root hash of a trie rooted at this node.
 pub fn node_root<H: Hasher>(node: &Node<H>) -> H::Out {
+    // A Stub already IS its own root hash: there is no RLP to encode, only the
+    // reference its parent held.
+    if let Node::Stub(h) = node {
+        return *h;
+    }
     let mut db = BTreeMap::new();
     H::hash_all(&[&encode_node::<H>(node, &mut db)])
 }

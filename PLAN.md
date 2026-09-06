@@ -64,6 +64,7 @@ into its parent and therefore arrived in the witness for free.
 
 - `PTRIE.md` §3 — what a witness must contain, and the one thing it cannot
 - `PTRIE.md` §4 — design decisions already made; do not relitigate without cause
+- `PTRIE.md` §5 — what Phase A already provides, and the gotchas it hit
 - `PTRIE.md` §6 — the Phase B sketch this plan implements
 - `PTRIE.md` §8 — reth integration, verified
 - `NOTES.md` §6.2 — the deletion collapse rules in the non-partial case
@@ -171,6 +172,19 @@ Each currently has a `Stub` arm that panics. Replace with:
 ```rust
 Node::Stub(h) => return Err(TrieError::MissingNode { hash: h, path: path_so_far.to_vec() }),
 ```
+
+**The catch-all arms are the real hazard.** Explicit panics are visible; a
+fallthrough is not. `insert_at` had a `_ =>` arm that treated `Stub` like
+`Null`, replacing it with a `Leaf` — silently discarding an entire subtree and
+returning a wrong root. `get_at`'s `_ => None` is the same class: it reports a
+key absent when the truth is "we do not know", which would make an exclusion
+proof over a partial trie a lie.
+
+So step 1 is not only about propagating errors. **Audit every `match` on `Node`
+in `trie.rs` and replace every `_` and `..` arm with explicit variants**,
+including `Stub`. That is what `Result` buys beyond tidiness: once the
+fallthroughs are gone the compiler finds every site, and a silently-wrong root
+becomes impossible.
 
 ### 3.3 Threading the path
 
