@@ -1,7 +1,11 @@
 # Partial tries: stateless state-root recomputation
 
 **Phase A: done, verified against mainnet.**
-**Phase B: designed, mechanism verified, not yet implemented.**
+**Phase B: done, verified against mainnet.** All five steps complete:
+`TrieError` + `Result`-ified traversal, `NodeProvider`/`MapProvider`/
+`WitnessProvider`/`RecordingProvider`, the delete-collapse tests against a
+synthetic oracle, the step-0 occupancy measurement, and `RethProvider` —
+verified live against a real USDC balance slot (`examples/phase_b.rs`).
 
 Prerequisites: stages 1–7 (insert, get, remove, byte-exact roots, proofs).
 
@@ -562,6 +566,26 @@ unavailable:
 - Open read-only with `EthereumNode::provider_factory_builder()
   .open_read_only(spec, ReadOnlyConfig::from_datadir(dir), runtime)` — safe
   against a running node's datadir.
+- **Follow-up, not yet done: batch the witness bootstrap into one
+  `multiproof()` call instead of one `state.proof()` per touched account.**
+  `examples/block.rs` (the yevm block-replay experiment) calls
+  `state.proof(addr, &slots)` separately for every touched account to build
+  the initial witness — measured on a real 552-account block: **5.44s of a
+  9.6s total run**, i.e. 552 independent trie walks from the root, each
+  paying its own MDBX round-trips. `StateProofProvider::multiproof()`
+  (§8.1/§9) already accepts a `MultiProofTargets` map keyed by *many*
+  hashed addresses at once (see `crates/rpc/rpc-eth-api/src/helpers/state.rs`'s
+  `get_multi_proof` in reth itself for the exact usage pattern: build one
+  `MultiProofTargets`, one call, then split `multiproof.account_proof(addr,
+  &slots)` back out per account) — one round trip instead of N. The tradeoff:
+  `proof()` conveniently hands back a decoded `AccountProof` (nonce, balance,
+  storageRoot, codeHash already parsed); `multiproof()` returns raw
+  `account_subtree`/`storages[addr].subtree` nodes only, so switching means
+  decoding each touched account's `TrieAccount` leaf ourselves from the
+  reconstructed `Node<Keccak256>` (`build_partial` + a leaf lookup) instead
+  of trusting `.info`. Expected payoff: this is the single largest cost in
+  the whole block-replay run by a wide margin (bigger than yevm execution
+  itself), so batching it should cut total run time roughly in half.
 
 ### 8.6 Worth reading first
 
@@ -585,44 +609,119 @@ ahead of time.
 
 | File | Contents |
 |---|---|
-| `crates/mpt-core/src/trie.rs` | `Stub` variant, `decode_node`, `build_partial`, `node_root`, `count_stubs`, `Trie::from_node` — **done** |
-| `crates/mpt-core/src/error.rs` | `TrieError` — todo |
-| `crates/mpt-core/src/partial.rs` | `NodeProvider`, `WitnessProvider`, `MapProvider`, `RecordingProvider` — todo |
-| `crates/mpt-core/tests/partial.rs` | Synthetic round-trip and its variants — todo |
-| `crates/mpt-core/tests/provider.rs` | Phase B, including the delete-collapse sibling case — todo |
-| `crates/mpt-reth/src/bin/live.rs` | Two-level mainnet verification and mutation — **done** |
-| `crates/mpt-reth/src/bin/collapse.rs` | Path-directed fetch of a missing node — **done** |
+| `crates/mpt-core/src/trie.rs` | `Stub` variant, `decode_node`, `build_partial`, `node_root`, `count_stubs`, `Trie::from_node`, `Result`-ified traversal (`insert_at`/`remove_at`/`get_at`/`normalize`/`prepend`), `insert_with`/`remove_with`/`get_with` — **done** |
+| `crates/mpt-core/src/error.rs` | `TrieError` — **done** |
+| `crates/mpt-core/src/partial.rs` | `NodeProvider`, `NoProvider`, `WitnessProvider`, `MapProvider`, `RecordingProvider` — **done** |
+| `crates/mpt-core/tests/partial.rs` | Synthetic round-trip (fixed sweep + proptest) against `MapProvider`, plus `WitnessProvider`/`RecordingProvider` coverage — **done** |
+| `crates/mpt-core/tests/provider.rs` | Delete-collapse: Leaf sibling, Fork sibling, value-slot (no provider needed), a repeated-collapse session — **done** |
+| `crates/mpt-core/examples/live.rs` | Two-level mainnet verification and mutation — **done** |
+| `crates/mpt-reth/examples/collapse.rs` | Path-directed fetch of a missing node, walked through by hand — **done** |
+| `crates/mpt-reth/examples/sweep.rs` | Step 0: Fork-occupancy histogram across real slots — **done** |
+| `crates/mpt-reth/src/lib.rs` (`RethProvider`) | Step 4: caching `NodeProvider` impl — **done** |
+| `crates/mpt-reth/examples/phase_b.rs` | `RethProvider` acceptance test, live against mainnet — **done** |
 
 ### Remaining order
 
-1. `TrieError`; `Result`-ify traversal. Mechanical, noisy, no behaviour change.
-   **This is the bulk of the remaining work.**
-2. `NodeProvider` + `MapProvider`; thread it through traversal.
-3. `normalize` sibling resolution; the delete-collapse test against a synthetic
-   full trie used as the oracle.
-4. `RethProvider` (§8.3, ten lines) and the same test against mainnet.
-5. `RecordingProvider`; use it to measure how often the collapse case actually
-   fires on real workloads.
+All five steps are done:
 
-Step 1 is the only substantial piece left. Everything downstream is small
-because §8 turned out to be easy.
+1. ~~`TrieError`; `Result`-ify traversal.~~ Done.
+2. ~~`NodeProvider` + `MapProvider`; thread it through traversal.~~ Done.
+3. ~~`normalize` sibling resolution; the delete-collapse test against a synthetic
+   full trie used as the oracle.~~ Done — see `tests/provider.rs`.
+4. ~~`RethProvider` (§8.3, ten lines) and the same test against mainnet.~~ Done
+   — see `crates/mpt-reth/src/lib.rs` and `examples/phase_b.rs`.
+5. ~~`RecordingProvider`; measure how often the collapse case fires on real
+   workloads.~~ Done via `examples/sweep.rs` (a lighter-weight measurement that
+   doesn't need a full `RecordingProvider` session) — see §10.
+
+Steps 1–3 turned out to need no design changes beyond what §4 and §6 already
+specified, with one exception: `get_with`/`get` take `&mut self`, not `&self`
+as originally sketched — see §10.
 
 ---
 
 ## 10. Open questions
 
-- **How often does the collapse case actually fire?** `collapse.rs` reports Fork
-  occupancy on a real key's path. Measure before optimising anything.
+- **How often does the collapse case actually fire? Answered: 13.7%** (41/300)
+  in `examples/sweep.rs`'s measurement — 150 pseudo-random storage slots each
+  on USDC and WETH, real mainnet data, block ~25920774. Occupancy-2 Forks
+  (where removal collapses) ranged from 9% (USDC) to a higher share on WETH;
+  in **every** occupancy-2 case found (41/41), the surviving sibling was a
+  genuine `Stub`, never already inlined in the proof. This settles PLAN.md
+  §2's decision: at ~14%, Phase B is core infrastructure, not a rare edge
+  case — threading a provider through traversal is worth it. (Slots were
+  pseudo-random rather than known-populated ones; see the sweep's own doc
+  comment for why that's still a fair sample of Fork occupancy.) Verified
+  live end-to-end on a genuinely populated slot too: `examples/phase_b.rs`
+  removes a real USDC holder's balance slot (occupancy 2), through
+  `RethProvider`, and reverts it back to the exact original `storageRoot`.
 - **Does one `normalize` pass suffice** when resolving may itself expose new
   stubs a level down, as it did for the non-partial case (NOTES.md §6.2)?
-- **Should `Trie` own its provider** rather than taking it per call? Owning is
-  ergonomic but makes `Trie` non-`Send` for many providers and couples the type
-  to a lifetime.
+  **Answered: yes, and provably so, not just empirically.** A `Fork`'s
+  occupancy-≥2 invariant (`Node::debug_check`) means a single `remove` can
+  collapse **at most one** Fork: an ancestor Fork's occupancy only changes if
+  one of its own children disappears entirely, which only happens if that
+  child was itself a bare `Leaf` holding the removed key — never a `Fork`
+  (a Fork can't hold just one key, by the same invariant). So the chain a
+  removal triggers is Fork-collapse (at most once) followed by zero or more
+  `Skip`-path merges on the way back up, and merging paths never needs a
+  provider. `tests/provider.rs::repeated_collapses_against_one_provider`
+  exercises many *separate* removals against one provider instead, each
+  independently resolving its own sibling.
+- **Should `Trie` own its provider** rather than taking it per call?
+  **Answered: no — per-call, as `insert_with`/`remove_with`/`get_with` do.**
+  Implemented as sketched; no reason found to revisit.
 - **Should `build_partial` fail or return a bare `Stub`** when the root itself
-  is missing? An all-stub trie is a legitimate representation of "we know the
-  root and nothing else".
+  is missing? **Answered: bare `Stub`** — already how `build_partial` worked
+  going into Phase B (`crates/mpt-core/src/trie.rs`), and
+  `insert_into_a_stub_root_fails` (`tests/trie.rs`) now pins the exact error:
+  `Err(MissingNode { hash: root, path: [] })`.
+- **New: `get_with` takes `&mut self`, not `&self`.** The sketch in §6.1 had
+  `get_with(&self, ...)`, but resolving a `Stub` mutates the tree (§4.5,
+  "resolve in place") and the returned `&[u8]` borrows from that mutation, so
+  it needs `&mut Node<H>` underneath. Plain `get` moved to `&mut self` too, to
+  share one implementation and because it already needed a non-panicking way
+  to distinguish "confirmed absent" (`Ok(None)`) from "don't know"
+  (`Err(MissingNode)`) — the exact bug class flagged in PLAN.md §3.2 (a
+  `Stub` silently reported as absent would make an exclusion proof over a
+  partial trie a lie). No test in this repo relied on calling `get` through a
+  shared `&Trie` reference, so the widening cost nothing.
 - **Witness serialisation format.** A flat list of RLP nodes matches what
   `eth_getProof` returns. Worth defining if witnesses are shipped between
-  processes.
+  processes. Still open.
 - **Is `reth-trie-sparse` usable standalone?** If so, §6 is mostly redundant.
+  Still open.
+- **Does any publicly-hosted RPC endpoint expose a path- or hash-directed node
+  lookup, making the delete-collapse gap (crates/mpt-wasm's Mainnet tab hits
+  this directly) fixable without running your own node? Researched, answer:
+  no, and the constraint is more fundamental than "provider hasn't gotten
+  around to it."**
+  - `RethProvider` (§8) was never an RPC method to begin with — `multiproof()`
+    is a Rust API called against a local, embedded `open_read_only(datadir)`
+    (§8.5); there's no network endpoint here to look for on a public host.
+  - geth's `debug_dbGet` reads the raw KV store by its literal on-disk key,
+    which — depending on the client's storage scheme (hash-keyed vs. the
+    newer path-based scheme; §8.4's schema-churn point applies here too) —
+    might even be a path. But commercial providers uniformly exclude it: paid
+    "debug/trace" tiers expose `debug_traceTransaction` /
+    `debug_traceBlockByNumber` / `debug_traceCall`, never raw `debug_dbGet` —
+    unrestricted disk-key access is treated as an operational risk, not a
+    product feature. Erigon's extra `debug_*`/`erigon_*` methods (e.g.
+    `debug_accountRange`) don't cover single-node-by-path either.
+  - `eth_getProof` (EIP-1186) remains the only standardized, universally
+    available method, and PLAN.md §1 / §8.1 already cover why it can't be
+    steered: it hashes the key before walking, so you can't choose a path.
+  - The actual fix on the horizon is protocol-level, not an RPC addition:
+    EIP-6800 (Verkle) and the newer EIP-7864 (binary tree, replacing the
+    hexary Keccak MPT entirely) are both aimed at making witnesses small
+    enough to travel WITH blocks, which would make ad hoc sideways fetches
+    unnecessary rather than easier. As of this writing neither has shipped —
+    Verkle is paused pending further review, and EIP-7864 looks like the
+    likelier near-term direction — so there's nothing to build against yet.
+  - Net effect: the mitigations already listed in PLAN.md §1 (run your own
+    node for path-directed access, brute-force a short prefix's preimage, or
+    batch enough keys into one `eth_getProof` call that the sibling arrives
+    incidentally) are still the complete list. `crates/mpt-wasm`'s Mainnet
+    tab surfaces the unresolved case honestly (exact hash + path in the
+    error) rather than pretending it's fixable client-side.
 

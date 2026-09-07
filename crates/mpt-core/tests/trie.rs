@@ -1,4 +1,5 @@
 use mpt_core::Keccak256 as K;
+use mpt_core::error::TrieError;
 use mpt_core::trie::{Node, Trie};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -10,7 +11,7 @@ fn root_of(pairs: &[(&[u8], &[u8])]) -> [u8; 32] {
 fn built(pairs: &[(&[u8], &[u8])]) -> Trie<K> {
     let mut t = Trie::new();
     for (k, v) in pairs {
-        t.insert(k, v.to_vec());
+        t.insert(k, v.to_vec()).unwrap();
         t.root().debug_check();
     }
     t
@@ -25,14 +26,14 @@ const CLASSIC: &[(&[u8], &[u8])] = &[
 
 #[test]
 fn classic_four_lookups() {
-    let t = built(CLASSIC);
+    let mut t = built(CLASSIC);
     for (k, v) in CLASSIC {
-        assert_eq!(t.get(k), Some(*v), "key={:?}", core::str::from_utf8(k));
+        assert_eq!(t.get(k).unwrap(), Some(*v), "key={:?}", core::str::from_utf8(k));
     }
-    assert_eq!(t.get(b"d"), None);
-    assert_eq!(t.get(b"dogez"), None);
-    assert_eq!(t.get(b"hors"), None);
-    assert_eq!(t.get(b""), None);
+    assert_eq!(t.get(b"d").unwrap(), None);
+    assert_eq!(t.get(b"dogez").unwrap(), None);
+    assert_eq!(t.get(b"hors").unwrap(), None);
+    assert_eq!(t.get(b"").unwrap(), None);
 }
 
 #[test]
@@ -74,41 +75,41 @@ fn classic_four_shape() {
 #[test]
 fn value_replacement() {
     let mut t = built(CLASSIC);
-    t.insert(b"dog", b"hound".to_vec());
+    t.insert(b"dog", b"hound".to_vec()).unwrap();
     t.root().debug_check();
-    assert_eq!(t.get(b"dog"), Some(&b"hound"[..]));
-    assert_eq!(t.get(b"doge"), Some(&b"coin"[..]));
+    assert_eq!(t.get(b"dog").unwrap(), Some(&b"hound"[..]));
+    assert_eq!(t.get(b"doge").unwrap(), Some(&b"coin"[..]));
 }
 
 #[test]
 fn empty_key() {
     let mut t = Trie::<K>::new();
-    t.insert(b"", b"root-value".to_vec());
+    t.insert(b"", b"root-value".to_vec()).unwrap();
     t.root().debug_check();
-    assert_eq!(t.get(b""), Some(&b"root-value"[..]));
-    t.insert(b"a", b"other".to_vec());
+    assert_eq!(t.get(b"").unwrap(), Some(&b"root-value"[..]));
+    t.insert(b"a", b"other".to_vec()).unwrap();
     t.root().debug_check();
-    assert_eq!(t.get(b""), Some(&b"root-value"[..]));
-    assert_eq!(t.get(b"a"), Some(&b"other"[..]));
+    assert_eq!(t.get(b"").unwrap(), Some(&b"root-value"[..]));
+    assert_eq!(t.get(b"a").unwrap(), Some(&b"other"[..]));
 }
 
 #[test]
 fn diverge_at_first_nibble() {
-    let t = built(&[(b"\x01", b"one"), (b"\x81", b"two")]);
+    let mut t = built(&[(b"\x01", b"one"), (b"\x81", b"two")]);
     assert!(matches!(t.root(), Node::Fork { .. }), "no shared prefix");
-    assert_eq!(t.get(b"\x01"), Some(&b"one"[..]));
-    assert_eq!(t.get(b"\x81"), Some(&b"two"[..]));
+    assert_eq!(t.get(b"\x01").unwrap(), Some(&b"one"[..]));
+    assert_eq!(t.get(b"\x81").unwrap(), Some(&b"two"[..]));
 }
 
 #[test]
 fn wide_forks() {
     let mut t = Trie::<K>::new();
     for i in 0u16..256 {
-        t.insert(&i.to_be_bytes(), i.to_string().into_bytes());
+        t.insert(&i.to_be_bytes(), i.to_string().into_bytes()).unwrap();
     }
     t.root().debug_check();
     for i in 0u16..256 {
-        assert_eq!(t.get(&i.to_be_bytes()), Some(i.to_string().as_bytes()));
+        assert_eq!(t.get(&i.to_be_bytes()).unwrap(), Some(i.to_string().as_bytes()));
     }
 }
 
@@ -116,10 +117,10 @@ fn wide_forks() {
 fn one_nibble_remainder() {
     // Exercises the Skip-split subtlety: the remainder after the fork index is
     // a single nibble, so no wrapping Skip is created.
-    let t = built(&[(b"\x12\x34", b"a"), (b"\x12\x35", b"b"), (b"\x12", b"c")]);
-    assert_eq!(t.get(b"\x12\x34"), Some(&b"a"[..]));
-    assert_eq!(t.get(b"\x12\x35"), Some(&b"b"[..]));
-    assert_eq!(t.get(b"\x12"), Some(&b"c"[..]));
+    let mut t = built(&[(b"\x12\x34", b"a"), (b"\x12\x35", b"b"), (b"\x12", b"c")]);
+    assert_eq!(t.get(b"\x12\x34").unwrap(), Some(&b"a"[..]));
+    assert_eq!(t.get(b"\x12\x35").unwrap(), Some(&b"b"[..]));
+    assert_eq!(t.get(b"\x12").unwrap(), Some(&b"c"[..]));
 }
 
 #[test]
@@ -139,10 +140,10 @@ fn delete_restores_the_exact_root() {
         b"do",            // NOTE: overwrites an existing key, see below
     ] {
         let mut t = built(CLASSIC);
-        let existed = t.get(extra).is_some();
-        t.insert(extra, b"temporary".to_vec());
+        let existed = t.get(extra).unwrap().is_some();
+        t.insert(extra, b"temporary".to_vec()).unwrap();
         t.root().debug_check();
-        assert!(t.remove(extra), "remove({extra:?}) reported not-present");
+        assert!(t.remove(extra).unwrap(), "remove({extra:?}) reported not-present");
         t.root().debug_check();
 
         if existed {
@@ -163,7 +164,7 @@ fn delete_everything_gives_the_empty_root() {
     let empty = Trie::<K>::new().hash();
     let mut t = built(CLASSIC);
     for (k, _) in CLASSIC {
-        assert!(t.remove(k));
+        assert!(t.remove(k).unwrap());
         t.root().debug_check();
     }
     assert_eq!(hex::encode(t.hash()), hex::encode(empty));
@@ -190,7 +191,7 @@ fn order_of_deletion_does_not_matter() {
     ] {
         let mut t = built(all);
         for k in order {
-            assert!(t.remove(k), "remove({k:?})");
+            assert!(t.remove(k).unwrap(), "remove({k:?})");
             t.root().debug_check();
         }
         assert_eq!(hex::encode(t.hash()), hex::encode(want), "order {order:?}");
@@ -202,7 +203,7 @@ fn fork_collapses_to_leaf_when_one_child_remains() {
     // Two keys diverging at the first nibble make a bare Fork at the root.
     // Deleting one must leave a Leaf, not a Fork with a single occupant.
     let mut t = built(&[(b"\x01", b"a"), (b"\x81", b"b")]);
-    assert!(t.remove(b"\x81"));
+    assert!(t.remove(b"\x81").unwrap());
     t.root().debug_check();
     assert_eq!(
         hex::encode(t.hash()),
@@ -216,7 +217,7 @@ fn fork_collapses_to_leaf_when_only_the_value_slot_remains() {
     // the fork's value slot. Removing "abc" leaves only that slot, which must
     // become a Leaf with an empty remaining path.
     let mut t = built(&[(b"ab", b"short"), (b"abc", b"long")]);
-    assert!(t.remove(b"abc"));
+    assert!(t.remove(b"abc").unwrap());
     t.root().debug_check();
     assert_eq!(
         hex::encode(t.hash()),
@@ -229,7 +230,7 @@ fn skip_absorbs_a_collapsed_child() {
     // A deep shared prefix produces Skip -> Fork. Collapsing the fork must be
     // absorbed into the skip's path, producing ONE leaf, not Skip -> Leaf.
     let mut t = built(&[(b"aaaaaaaa1", b"x"), (b"aaaaaaaa2", b"y")]);
-    assert!(t.remove(b"aaaaaaaa2"));
+    assert!(t.remove(b"aaaaaaaa2").unwrap());
     t.root().debug_check();
     assert_eq!(
         hex::encode(t.hash()),
@@ -247,7 +248,7 @@ fn skip_merges_with_skip() {
         (b"prefix_bbb_3", b"3"),
     ];
     let mut t = built(pairs);
-    assert!(t.remove(b"prefix_bbb_3"));
+    assert!(t.remove(b"prefix_bbb_3").unwrap());
     t.root().debug_check();
     assert_eq!(
         hex::encode(t.hash()),
@@ -266,7 +267,7 @@ fn multi_level_collapse_propagates_upward() {
         (b"\x99", b"far"),
     ];
     let mut t = built(pairs);
-    assert!(t.remove(b"\x11\x11\x11\x12"));
+    assert!(t.remove(b"\x11\x11\x11\x12").unwrap());
     t.root().debug_check();
     assert_eq!(
         hex::encode(t.hash()),
@@ -284,15 +285,15 @@ fn collapse_across_the_inlining_boundary() {
     // boundary, which changes the parent's encoding too.
     let big = vec![0xabu8; 64];
     let mut t = Trie::<K>::new();
-    t.insert(b"k1", big.clone());
-    t.insert(b"k2", b"s".to_vec());
-    t.insert(b"k3", b"s".to_vec());
-    t.remove(b"k1");
+    t.insert(b"k1", big.clone()).unwrap();
+    t.insert(b"k2", b"s".to_vec()).unwrap();
+    t.insert(b"k3", b"s".to_vec()).unwrap();
+    t.remove(b"k1").unwrap();
     t.root().debug_check();
 
     let mut want = Trie::<K>::new();
-    want.insert(b"k2", b"s".to_vec());
-    want.insert(b"k3", b"s".to_vec());
+    want.insert(b"k2", b"s".to_vec()).unwrap();
+    want.insert(b"k3", b"s".to_vec()).unwrap();
     assert_eq!(hex::encode(t.hash()), hex::encode(want.hash()));
 }
 
@@ -308,7 +309,7 @@ fn removing_absent_keys_is_a_no_op() {
         b"doge\x00", // one nibble past a leaf
     ] {
         let mut t = built(CLASSIC);
-        assert!(!t.remove(absent), "remove({absent:?}) claimed success");
+        assert!(!t.remove(absent).unwrap(), "remove({absent:?}) claimed success");
         t.root().debug_check();
         assert_eq!(
             hex::encode(t.hash()),
@@ -321,31 +322,31 @@ fn removing_absent_keys_is_a_no_op() {
 #[test]
 fn remove_from_empty_trie() {
     let mut t = Trie::<K>::new();
-    assert!(!t.remove(b"anything"));
-    assert!(!t.remove(b""));
+    assert!(!t.remove(b"anything").unwrap());
+    assert!(!t.remove(b"").unwrap());
     assert_eq!(hex::encode(t.hash()), hex::encode(Trie::<K>::new().hash()));
 }
 
 #[test]
 fn double_remove() {
     let mut t = built(CLASSIC);
-    assert!(t.remove(b"dog"));
-    assert!(!t.remove(b"dog"), "second removal should report absent");
+    assert!(t.remove(b"dog").unwrap());
+    assert!(!t.remove(b"dog").unwrap(), "second removal should report absent");
     t.root().debug_check();
-    assert_eq!(t.get(b"dog"), None);
-    assert_eq!(t.get(b"doge"), Some(&b"coin"[..]));
+    assert_eq!(t.get(b"dog").unwrap(), None);
+    assert_eq!(t.get(b"doge").unwrap(), Some(&b"coin"[..]));
 }
 
 #[test]
 fn empty_key_removal() {
     let mut t = Trie::<K>::new();
-    t.insert(b"", b"at-root".to_vec());
-    t.insert(b"a", b"other".to_vec());
+    t.insert(b"", b"at-root".to_vec()).unwrap();
+    t.insert(b"a", b"other".to_vec()).unwrap();
     t.root().debug_check();
-    assert!(t.remove(b""));
+    assert!(t.remove(b"").unwrap());
     t.root().debug_check();
-    assert_eq!(t.get(b""), None);
-    assert_eq!(t.get(b"a"), Some(&b"other"[..]));
+    assert_eq!(t.get(b"").unwrap(), None);
+    assert_eq!(t.get(b"a").unwrap(), Some(&b"other"[..]));
     assert_eq!(
         hex::encode(t.hash()),
         hex::encode(root_of(&[(b"a", b"other")]))
@@ -365,14 +366,14 @@ proptest! {
     fn agrees_with_btreemap(map in kv_map(), probes in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..6), 0..20)) {
         let mut t = Trie::<K>::new();
         for (k, v) in &map {
-            t.insert(k, v.clone());
+            t.insert(k, v.clone()).unwrap();
             t.root().debug_check();
         }
         for (k, v) in &map {
-            prop_assert_eq!(t.get(k), Some(v.as_slice()));
+            prop_assert_eq!(t.get(k).unwrap(), Some(v.as_slice()));
         }
         for p in &probes {
-            prop_assert_eq!(t.get(p), map.get(p).map(|v| v.as_slice()));
+            prop_assert_eq!(t.get(p).unwrap(), map.get(p).map(|v| v.as_slice()));
         }
     }
 
@@ -380,7 +381,7 @@ proptest! {
     fn structure_is_insertion_order_independent(map in kv_map(), seed in any::<u64>()) {
         let mut a = Trie::<K>::new();
         for (k, v) in &map {
-            a.insert(k, v.clone());
+            a.insert(k, v.clone()).unwrap();
         }
 
         let mut shuffled: Vec<_> = map.iter().collect();
@@ -392,7 +393,7 @@ proptest! {
         }
         let mut b = Trie::new();
         for (k, v) in shuffled {
-            b.insert(k, v.clone());
+            b.insert(k, v.clone()).unwrap();
         }
 
         prop_assert_eq!(a, b);
@@ -410,15 +411,15 @@ proptest! {
         let doomed: Vec<_> = keys.iter().zip(&cut).filter(|&(_, &c)| c).map(|(k, _)| k.clone()).collect();
 
         let mut deleted = Trie::<K>::new();
-        for (k, v) in &map { deleted.insert(k, v.clone()); }
+        for (k, v) in &map { deleted.insert(k, v.clone()).unwrap(); }
         for k in &doomed {
-            prop_assert!(deleted.remove(k));
+            prop_assert!(deleted.remove(k).unwrap());
             deleted.root().debug_check();
         }
 
         let mut direct = Trie::<K>::new();
         for (k, v) in &map {
-            if !doomed.contains(k) { direct.insert(k, v.clone()); }
+            if !doomed.contains(k) { direct.insert(k, v.clone()).unwrap(); }
         }
 
         prop_assert_eq!(hex::encode(deleted.hash()), hex::encode(direct.hash()));
@@ -437,28 +438,28 @@ proptest! {
 
         for (k, v) in &ops {
             match v {
-                Some(v) => { t.insert(k, v.clone()); m.insert(k.clone(), v.clone()); }
+                Some(v) => { t.insert(k, v.clone()).unwrap(); m.insert(k.clone(), v.clone()); }
                 None => {
                     let expected = m.remove(k).is_some();
-                    prop_assert_eq!(t.remove(k), expected, "remove({:?}) return value", k);
+                    prop_assert_eq!(t.remove(k).unwrap(), expected, "remove({:?}) return value", k);
                 }
             }
             t.root().debug_check();
         }
 
-        for (k, v) in &m { prop_assert_eq!(t.get(k), Some(v.as_slice())); }
-        for (k, _) in &ops { if !m.contains_key(k) { prop_assert_eq!(t.get(k), None); } }
+        for (k, v) in &m { prop_assert_eq!(t.get(k).unwrap(), Some(v.as_slice())); }
+        for (k, _) in &ops { if !m.contains_key(k) { prop_assert_eq!(t.get(k).unwrap(), None); } }
     }
 
     #[test]
     fn insert_then_remove_is_identity(map in kv_map(), extra in prop::collection::vec(any::<u8>(), 0..5)) {
         prop_assume!(!map.contains_key(&extra));
         let mut t = Trie::<K>::new();
-        for (k, v) in &map { t.insert(k, v.clone()); }
+        for (k, v) in &map { t.insert(k, v.clone()).unwrap(); }
         let before = t.hash();
 
-        t.insert(&extra, b"scratch".to_vec());
-        prop_assert!(t.remove(&extra));
+        t.insert(&extra, b"scratch".to_vec()).unwrap();
+        prop_assert!(t.remove(&extra).unwrap());
         t.root().debug_check();
 
         prop_assert_eq!(hex::encode(t.hash()), hex::encode(before));
@@ -492,7 +493,27 @@ proptest! {
 
 use mpt_core::hasher::keccak;
 use mpt_core::path::to_nibbles;
-use mpt_core::trie::{build_partial, count_stubs, node_root};
+use mpt_core::trie::{build_partial, count_stubs, node_rlp, node_root};
+
+#[test]
+fn node_rlp_hashes_to_node_root() {
+    let t = built(CLASSIC);
+    // Walk down to a non-Stub, non-root node so this isn't just re-testing
+    // `hash()` on the root. CLASSIC's root is a Skip over the shared [6]
+    // nibble (see classic_four_shape); its child Fork has the real nodes.
+    let Node::Skip { child, .. } = t.root() else {
+        panic!("CLASSIC's root should be a Skip")
+    };
+    let Node::Fork { children, .. } = &**child else {
+        panic!("Skip child must be a Fork")
+    };
+    let grandchild = children
+        .iter()
+        .flatten()
+        .next()
+        .expect("CLASSIC's Fork has at least one child");
+    assert_eq!(keccak(&node_rlp(grandchild)), node_root(grandchild));
+}
 
 /// Where an exclusion proof stopped.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Hash)]
@@ -551,7 +572,7 @@ fn full_trie(n: u16) -> Trie<K> {
     for i in 0..n {
         // 40-byte values so nothing inlines: every node is a real hashed node
         // and off-path children genuinely become Stubs.
-        t.insert(&key(i), vec![(i % 251) as u8; 40]);
+        t.insert(&key(i), vec![(i % 251) as u8; 40]).unwrap();
     }
     t
 }
@@ -568,7 +589,7 @@ fn insertion_never_needs_a_node_outside_its_proof() {
     for i in 1000u16..1400 {
         let k = key(i);
         assert!(
-            full.get(&k).is_none(),
+            full.get(&k).unwrap().is_none(),
             "test key {i} collided with a present key"
         );
 
@@ -601,11 +622,11 @@ fn insertion_never_needs_a_node_outside_its_proof() {
         // this walks into a Stub — which either panics or silently produces a
         // different root. Both fail here.
         let mut partial_trie = Trie::<K>::from_node(partial);
-        partial_trie.insert(&k, vec![0xee; 40]);
+        partial_trie.insert(&k, vec![0xee; 40]).unwrap();
         let partial_root = partial_trie.hash();
 
         let mut reference = full_trie(PRESENT);
-        reference.insert(&k, vec![0xee; 40]);
+        reference.insert(&k, vec![0xee; 40]).unwrap();
 
         assert_eq!(
             hex::encode(partial_root),
@@ -647,10 +668,10 @@ fn insertion_into_an_empty_partial_trie() {
     );
 
     let mut t = Trie::<K>::from_node(partial);
-    t.insert(b"anything", b"value".to_vec());
+    t.insert(b"anything", b"value".to_vec()).unwrap();
 
     let mut reference = Trie::<K>::new();
-    reference.insert(b"anything", b"value".to_vec());
+    reference.insert(b"anything", b"value".to_vec()).unwrap();
     assert_eq!(t.hash(), reference.hash());
 }
 
@@ -677,8 +698,8 @@ fn repeated_inserts_into_one_partial_trie() {
 
     let mut reference = full_trie(PRESENT);
     for (j, k) in new_keys.iter().enumerate() {
-        partial.insert(k, vec![j as u8; 40]);
-        reference.insert(k, vec![j as u8; 40]);
+        partial.insert(k, vec![j as u8; 40]).unwrap();
+        reference.insert(k, vec![j as u8; 40]).unwrap();
         assert_eq!(
             hex::encode(partial.hash()),
             hex::encode(reference.hash()),
@@ -702,14 +723,14 @@ fn value_update_needs_nothing_extra() {
     }
 
     let mut partial = Trie::<K>::from_node(build_partial(&witness, &root));
-    partial.insert(&k, vec![0x42; 40]);
+    partial.insert(&k, vec![0x42; 40]).unwrap();
 
     let mut reference = full_trie(PRESENT);
-    reference.insert(&k, vec![0x42; 40]);
+    reference.insert(&k, vec![0x42; 40]).unwrap();
     assert_eq!(hex::encode(partial.hash()), hex::encode(reference.hash()));
 
     // And reverting restores the root byte-exactly — the canonicality check.
-    partial.insert(&k, vec![(77 % 251) as u8; 40]);
+    partial.insert(&k, vec![(77 % 251) as u8; 40]).unwrap();
     assert_eq!(hex::encode(partial.hash()), hex::encode(root));
 }
 
@@ -729,7 +750,7 @@ type Witness = BTreeMap<[u8; 32], Vec<u8>>;
 fn build(pairs: &[(&[u8], &[u8])]) -> Trie<K> {
     let mut t = Trie::<K>::new();
     for (k, v) in pairs {
-        t.insert(k, v.to_vec());
+        t.insert(k, v.to_vec()).unwrap();
     }
     t
 }
@@ -764,8 +785,8 @@ fn check(name: &str, pairs: &[(&[u8], &[u8])], probe: &[&[u8]], ops: &[(&[u8], &
     let mut partial_trie = Trie::<K>::from_node(partial);
     let mut reference = build(pairs);
     for (k, v) in ops {
-        partial_trie.insert(k, v.to_vec());
-        reference.insert(k, v.to_vec());
+        partial_trie.insert(k, v.to_vec()).unwrap();
+        reference.insert(k, v.to_vec()).unwrap();
     }
 
     assert_eq!(
@@ -1000,12 +1021,10 @@ fn empty_witness_gives_a_stub_root() {
 }
 
 #[test]
-#[should_panic]
 fn insert_into_a_stub_root_fails() {
-    // Traversal cannot proceed past a Stub. Today that panics; after PLAN.md
-    // step 1 it must return Err(TrieError::MissingNode { hash, path: [] })
-    // instead. Convert this to an `assert!(matches!(..))` then, and drop the
-    // should_panic.
+    // Traversal cannot proceed past an unresolvable Stub: it must return
+    // Err(TrieError::MissingNode { hash, path: [] }) rather than panic or
+    // silently produce a wrong root.
     let owned: Vec<(Vec<u8>, Vec<u8>)> = (0u16..40)
         .map(|i| (keccak(&i.to_be_bytes())[..4].to_vec(), vec![i as u8; 40]))
         .collect();
@@ -1014,7 +1033,14 @@ fn insert_into_a_stub_root_fails() {
         .map(|(k, v)| (k.as_slice(), v.as_slice()))
         .collect();
 
-    let root = build(&pairs).hash();
+    let mut full = build(&pairs);
+    let root = full.hash();
     let mut t = Trie::<K>::from_node(build_partial(&Witness::new(), &root));
-    t.insert(b"anything", vec![0xaa; 40]);
+    match t.insert(b"anything", vec![0xaa; 40]) {
+        Err(TrieError::MissingNode { hash, path }) => {
+            assert_eq!(hash, root, "the stub root's own hash");
+            assert!(path.is_empty(), "the root sits at the empty path");
+        }
+        other => panic!("expected Err(MissingNode {{ hash: root, path: [] }}), got {other:?}"),
+    }
 }

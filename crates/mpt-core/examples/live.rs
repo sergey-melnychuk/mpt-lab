@@ -381,7 +381,9 @@ async fn main() -> Result<()> {
         snodes.insert(keccak(n), n.clone());
     }
     let mut storage_trie = Trie::<Keccak256>::from_node(build_partial(&snodes, &storage_root));
-    storage_trie.insert(&skey, rlp_bytes(&new_value));
+    storage_trie
+        .insert(&skey, rlp_bytes(&new_value))
+        .map_err(|e| eyre::eyre!("{e:?}"))?;
     let storage_root2 = storage_trie.hash();
     println!(
         "  storageRoot  {}\n            -> {}",
@@ -404,7 +406,9 @@ async fn main() -> Result<()> {
         anodes.insert(keccak(n), n.clone());
     }
     let mut account_trie = Trie::<Keccak256>::from_node(build_partial(&anodes, &state_root));
-    account_trie.insert(&akey, account_rlp2);
+    account_trie
+        .insert(&akey, account_rlp2)
+        .map_err(|e| eyre::eyre!("{e:?}"))?;
     let state_root2 = account_trie.hash();
     println!(
         "  stateRoot    {}\n            -> {}",
@@ -418,15 +422,21 @@ async fn main() -> Result<()> {
     // is not stored — Ethereum deletes it — so "back" for an absent slot means
     // removing the key, not writing rlp(0).
     if value.iter().any(|&b| b != 0) {
-        storage_trie.insert(&skey, rlp_bytes(&value));
+        storage_trie
+            .insert(&skey, rlp_bytes(&value))
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
     } else {
-        storage_trie.remove(&skey);
+        storage_trie
+            .remove(&skey)
+            .map_err(|e| eyre::eyre!("{e:?}"))?;
     }
     eyre::ensure!(
         storage_trie.hash() == storage_root,
         "reverting the slot did not restore the storage root"
     );
-    account_trie.insert(&akey, account_rlp);
+    account_trie
+        .insert(&akey, account_rlp)
+        .map_err(|e| eyre::eyre!("{e:?}"))?;
     eyre::ensure!(
         account_trie.hash() == state_root,
         "reverting the account did not restore the state root"

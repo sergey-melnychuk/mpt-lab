@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 fn build(pairs: &[(&[u8], &[u8])]) -> Trie<K> {
     let mut t = Trie::<K>::new();
     for (k, v) in pairs {
-        t.insert(k, v.to_vec());
+        t.insert(k, v.to_vec()).unwrap();
     }
     t
 }
@@ -66,7 +66,7 @@ fn inclusion_across_shapes() {
     let pairs = mixed();
     let mut t = Trie::<K>::new();
     for (k, v) in &pairs {
-        t.insert(k, v.clone());
+        t.insert(k, v.clone()).unwrap();
     }
     let root = t.hash();
     for (k, v) in &pairs {
@@ -144,7 +144,7 @@ fn exclusion_after_deletion() {
     // A deleted key must be provably absent, and the proof must reflect the
     // collapsed shape rather than any stale structure.
     let mut t = build(CLASSIC);
-    t.remove(b"dog");
+    t.remove(b"dog").unwrap();
     let root = t.hash();
     assert_eq!(verify(&root, b"dog", &t.prove(b"dog")), Ok(None));
     assert_eq!(
@@ -183,7 +183,7 @@ fn tampering_with_any_node_is_detected() {
     let pairs = mixed();
     let mut t = Trie::<K>::new();
     for (k, v) in &pairs {
-        t.insert(k, v.clone());
+        t.insert(k, v.clone()).unwrap();
     }
     let root = t.hash();
     let key = b"prefix_shared_aaaa";
@@ -212,7 +212,7 @@ fn truncated_proof_is_rejected() {
     let pairs = mixed();
     let mut t = Trie::<K>::new();
     for (k, v) in &pairs {
-        t.insert(k, v.clone());
+        t.insert(k, v.clone()).unwrap();
     }
     let root = t.hash();
     let key = b"prefix_shared_bbbb";
@@ -249,7 +249,7 @@ fn reordered_proof_is_rejected() {
     let pairs = mixed();
     let mut t = Trie::<K>::new();
     for (k, v) in &pairs {
-        t.insert(k, v.clone());
+        t.insert(k, v.clone()).unwrap();
     }
     let root = t.hash();
     let key = b"prefix_shared_aaaa";
@@ -314,7 +314,7 @@ fn every_proof_node_hashes_into_the_chain() {
     let pairs = mixed();
     let mut t = Trie::<K>::new();
     for (k, v) in &pairs {
-        t.insert(k, v.clone());
+        t.insert(k, v.clone()).unwrap();
     }
     let root = t.hash();
     for (k, _) in &pairs {
@@ -351,7 +351,7 @@ proptest! {
         probes in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..5), 1..20),
     ) {
         let mut t = Trie::<K>::new();
-        for (k, v) in &map { t.insert(k, v.clone()); }
+        for (k, v) in &map { t.insert(k, v.clone()).unwrap(); }
         let root = t.hash();
 
         for (k, v) in &map {
@@ -369,7 +369,7 @@ proptest! {
         let key = idx.get(&keys).clone();
 
         let mut t = Trie::<K>::new();
-        for (k, v) in &map { t.insert(k, v.clone()); }
+        for (k, v) in &map { t.insert(k, v.clone()).unwrap(); }
         let root = t.hash();
         let proof = t.prove(&key);
 
@@ -392,7 +392,7 @@ proptest! {
         key in prop::collection::vec(any::<u8>(), 0..5),
     ) {
         let mut t = Trie::<K>::new();
-        for (k, v) in &map { t.insert(k, v.clone()); }
+        for (k, v) in &map { t.insert(k, v.clone()).unwrap(); }
         let root = t.hash();
         // Random bytes are almost never a valid proof; the contract is that
         // the verifier returns rather than unwinding, whatever it is handed.

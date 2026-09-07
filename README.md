@@ -8,10 +8,10 @@ therefore match the `stateRoot` in a real block header.
 
 ```rust
 let mut t = Trie::<Keccak256>::new();
-t.insert(b"do",    b"verb".to_vec());
-t.insert(b"dog",   b"puppy".to_vec());
-t.insert(b"doge",  b"coin".to_vec());
-t.insert(b"horse", b"stallion".to_vec());
+t.insert(b"do",    b"verb".to_vec()).unwrap();
+t.insert(b"dog",   b"puppy".to_vec()).unwrap();
+t.insert(b"doge",  b"coin".to_vec()).unwrap();
+t.insert(b"horse", b"stallion".to_vec()).unwrap();
 
 assert_eq!(
     hex::encode(t.hash()),

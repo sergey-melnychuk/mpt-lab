@@ -97,9 +97,9 @@ fn apply(pairs: &[Pair], secure: bool) -> [u8; 32] {
             k.clone()
         };
         match v {
-            Some(v) => t.insert(&key, v.clone()),
+            Some(v) => t.insert(&key, v.clone()).unwrap(),
             None => {
-                t.remove(&key);
+                t.remove(&key).unwrap();
             }
         }
     }

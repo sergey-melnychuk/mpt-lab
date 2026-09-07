@@ -422,13 +422,20 @@ byte-exactly.
 
 ## 8. Definition of done
 
-- [ ] Step 0 measurement recorded in `PTRIE.md` §10
-- [ ] `TrieError` exists; all traversal returns `Result`; existing suite green
-- [ ] `NodeProvider` + `MapProvider` + `WitnessProvider` + `RecordingProvider`
-- [ ] Partial trie driven by `MapProvider` matches a full trie under random
-      interleaved insert/remove sequences (proptest)
-- [ ] Delete-collapse resolves both a Leaf sibling and a Fork sibling, with the
-      revert assertion passing
-- [ ] `RethProvider` with caching; the same test green against mainnet
-- [ ] `PTRIE.md` status line updated to "Phase B: done"
+- [x] Step 0 measurement recorded in `PTRIE.md` §10 — 13.7% of probed slots
+      collapse a Fork on removal (`examples/sweep.rs`, real mainnet data)
+- [x] `TrieError` exists; all traversal returns `Result`; existing suite green
+- [x] `NodeProvider` + `MapProvider` + `WitnessProvider` + `RecordingProvider`
+- [x] Partial trie driven by `MapProvider` matches a full trie under random
+      interleaved insert/remove sequences (proptest) — `tests/partial.rs`
+- [x] Delete-collapse resolves both a Leaf sibling and a Fork sibling, with the
+      revert assertion passing — `tests/provider.rs`
+- [x] `RethProvider` with caching; the same test green against mainnet —
+      `crates/mpt-reth/src/lib.rs` + `examples/phase_b.rs`, run live against a
+      real USDC balance slot
+- [x] `PTRIE.md` status line updated to "Phase B: done"
+
+Note on repo layout: this plan's file paths (`crates/mpt-reth/src/bin/live.rs`,
+`crates/mpt-reth/src/bin/collapse.rs`) predate a rename — the actual files are
+`crates/mpt-core/examples/live.rs` and `crates/mpt-reth/examples/collapse.rs`.
 

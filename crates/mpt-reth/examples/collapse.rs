@@ -333,7 +333,10 @@ fn main() -> eyre::Result<()> {
     );
 
     let mut trie = Trie::<Keccak256>::from_node(resolved);
-    eyre::ensure!(trie.remove(&skey), "remove reported the key absent");
+    eyre::ensure!(
+        trie.remove(&skey).map_err(|e| eyre::eyre!("{e:?}"))?,
+        "remove reported the key absent"
+    );
     let after = trie.hash();
     println!("\nremoved slot (SSTORE -> 0)");
     println!(
@@ -345,7 +348,8 @@ fn main() -> eyre::Result<()> {
     // Put it back. A partial trie is canonical or it is nothing: restoring the
     // value must restore the root byte-for-byte, or `normalize` produced a
     // shape the original trie never had.
-    trie.insert(&skey, rlp_bytes(&value));
+    trie.insert(&skey, rlp_bytes(&value))
+        .map_err(|e| eyre::eyre!("{e:?}"))?;
     eyre::ensure!(
         trie.hash() == storage_root,
         "re-inserting did not restore the root — collapse/prepend is not canonical"

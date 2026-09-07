@@ -1,5 +1,9 @@
 [workspace]
 members = ["crates/*"]
+# mpt-reth pulls reth via git (a large, slow-to-build dependency tree), so it
+# stays out of the default member set: plain `cargo build`/`cargo test` must
+# not build it. `cargo build -p mpt-reth` or `--workspace` still can.
+default-members = ["crates/mpt-core"]
 resolver = "3"
 
 [workspace.package]

@@ -28,5 +28,16 @@ rlp = "0.6"
 hex = "0.4"
 eyre.workspace = true
 
+[dev-dependencies]
+# Path deps into the user's local yevm checkout — the git remote is a private
+# SSH URL, and yevm-reth pins the SAME reth v2.5.1 tag this crate already
+# does, against the SAME local datadir (see examples/block.rs).
+yevm-core = { path = "/home/work/Code/yevm/yevm-core" }
+yevm-reth = { path = "/home/work/Code/yevm/yevm-reth" }
+yevm-base = { path = "/home/work/Code/yevm/yevm-base" }
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
+alloy-rlp = "0.3"
+alloy-consensus = "2"
+
 [profile.release]
 debug = true

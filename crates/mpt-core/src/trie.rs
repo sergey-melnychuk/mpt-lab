@@ -3,7 +3,9 @@ use alloc::{boxed::Box, collections::BTreeMap};
 use rlp::RlpStream;
 use thiserror::Error;
 
+use crate::error::TrieError;
 use crate::hasher::keccak;
+use crate::partial::{NodeProvider, NoProvider};
 use crate::path::{hex_prefix_decode, hex_prefix_encode};
 use crate::{
     Hasher,
@@ -117,22 +119,61 @@ impl<H: Hasher> Trie<H> {
         &self.root
     }
 
-    pub fn insert(&mut self, key: &[u8], value: Vec<u8>) {
-        let suffix = to_nibbles(key);
-        let root = core::mem::replace(&mut self.root, Node::Null);
-        self.root = insert_at(root, &suffix, value);
+    /// Insert `key` -> `value`. Fails only if the path a full trie would take
+    /// runs into a `Stub` this trie cannot resolve on its own — see
+    /// [`Trie::insert_with`].
+    pub fn insert(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), TrieError<H>> {
+        self.insert_with(&NoProvider, key, value)
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        get_at(&self.root, &to_nibbles(key))
-    }
-
-    pub fn remove(&mut self, key: &[u8]) -> bool {
+    /// Insert `key` -> `value`, resolving any `Stub` on the path through
+    /// `provider`.
+    pub fn insert_with<P: NodeProvider<H>>(
+        &mut self,
+        provider: &P,
+        key: &[u8],
+        value: Vec<u8>,
+    ) -> Result<(), TrieError<H>> {
         let suffix = to_nibbles(key);
         let root = core::mem::replace(&mut self.root, Node::Null);
-        let (root, removed) = remove_at(root, &suffix);
+        self.root = insert_at(root, &suffix, &suffix, value, provider)?;
+        Ok(())
+    }
+
+    /// Look up `key`. `Ok(None)` means confirmed absent; `Err(MissingNode)`
+    /// means "we do not know" — see [`Trie::get_with`].
+    pub fn get(&mut self, key: &[u8]) -> Result<Option<&[u8]>, TrieError<H>> {
+        self.get_with(&NoProvider, key)
+    }
+
+    /// Look up `key`, resolving any `Stub` on the path through `provider`.
+    pub fn get_with<P: NodeProvider<H>>(
+        &mut self,
+        provider: &P,
+        key: &[u8],
+    ) -> Result<Option<&[u8]>, TrieError<H>> {
+        let suffix = to_nibbles(key);
+        get_at(&mut self.root, &suffix, &suffix, provider)
+    }
+
+    /// Remove `key`. Fails only if a Fork-collapse needs a sibling this trie
+    /// cannot resolve on its own — see [`Trie::remove_with`].
+    pub fn remove(&mut self, key: &[u8]) -> Result<bool, TrieError<H>> {
+        self.remove_with(&NoProvider, key)
+    }
+
+    /// Remove `key`, resolving any `Stub` — including a collapse's surviving
+    /// sibling — through `provider`.
+    pub fn remove_with<P: NodeProvider<H>>(
+        &mut self,
+        provider: &P,
+        key: &[u8],
+    ) -> Result<bool, TrieError<H>> {
+        let suffix = to_nibbles(key);
+        let root = core::mem::replace(&mut self.root, Node::Null);
+        let (root, removed) = remove_at(root, &suffix, &suffix, provider)?;
         self.root = root;
-        removed
+        Ok(removed)
     }
 
     pub fn hash(&mut self) -> H::Out {
@@ -392,15 +433,42 @@ fn append_ref<H: Hasher>(s: &mut RlpStream, node: &Node<H>, db: &mut BTreeMap<H:
     }
 }
 
-fn insert_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8], value: Vec<u8>) -> Node<H> {
+/// Bytes verified to hash to `h`, decoded into the node they stand for.
+/// A `Stub`'s children resolve to `Stub` in turn — resolving one node must
+/// not speculatively pull its subtree.
+fn resolve_stub<H: Hasher, P: NodeProvider<H>>(
+    h: H::Out,
+    path_so_far: &[u8],
+    provider: &P,
+) -> Result<Node<H>, TrieError<H>> {
+    let bytes = provider
+        .get(path_so_far, &h)
+        .ok_or(TrieError::MissingNode {
+            hash: h,
+            path: path_so_far.to_vec(),
+        })?;
+    let got = H::hash_all(&[&bytes]);
+    if got != h {
+        return Err(TrieError::HashMismatch { expected: h, got });
+    }
+    Ok(decode_node::<H>(&BTreeMap::new(), &bytes))
+}
+
+fn insert_at<H: Hasher, P: NodeProvider<H>>(
+    node: Node<H>,
+    key_nibbles: &[u8],
+    suffix_nibbles: &[u8],
+    value: Vec<u8>,
+    provider: &P,
+) -> Result<Node<H>, TrieError<H>> {
     match node {
-        Node::Null => Node::Leaf {
+        Node::Null => Ok(Node::Leaf {
             path: suffix_nibbles.to_vec(),
             value,
-        },
+        }),
         Node::Leaf { path, value: old } => {
             if path == suffix_nibbles {
-                return Node::Leaf { path, value };
+                return Ok(Node::Leaf { path, value });
             }
 
             let common = common_prefix_len(&path, suffix_nibbles);
@@ -428,20 +496,27 @@ fn insert_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8], value: Vec<u8>) ->
                 slot = Some(old);
             }
 
-            skip_or(
+            Ok(skip_or(
                 path[..common].to_vec(),
                 Node::Fork {
                     children,
                     value: slot,
                 },
-            )
+            ))
         }
         Node::Skip { path, child } if suffix_nibbles.starts_with(&path) => {
-            let child = insert_at(*child, &suffix_nibbles[path.len()..], value);
-            Node::Skip {
+            let plen = path.len();
+            let child = insert_at(
+                *child,
+                key_nibbles,
+                &suffix_nibbles[plen..],
+                value,
+                provider,
+            )?;
+            Ok(Node::Skip {
                 path,
                 child: Box::new(child),
-            }
+            })
         }
         Node::Skip { path, child } => {
             let common = common_prefix_len(&path, suffix_nibbles);
@@ -464,27 +539,27 @@ fn insert_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8], value: Vec<u8>) ->
                 slot = Some(value);
             }
 
-            skip_or(
+            Ok(skip_or(
                 path[..common].to_vec(),
                 Node::Fork {
                     children,
                     value: slot,
                 },
-            )
+            ))
         }
         Node::Fork {
             mut children,
             value: current,
         } => {
             if suffix_nibbles.is_empty() {
-                return Node::Fork {
+                return Ok(Node::Fork {
                     children,
                     value: Some(value),
-                };
+                });
             }
             let index = suffix_nibbles[0] as usize;
             let child = if let Some(child) = children[index].take() {
-                insert_at(*child, &suffix_nibbles[1..], value)
+                insert_at(*child, key_nibbles, &suffix_nibbles[1..], value, provider)?
             } else {
                 Node::Leaf {
                     path: suffix_nibbles[1..].to_vec(),
@@ -492,13 +567,15 @@ fn insert_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8], value: Vec<u8>) ->
                 }
             };
             children[index] = Some(Box::new(child));
-            Node::Fork {
+            Ok(Node::Fork {
                 children,
                 value: current,
-            }
+            })
         }
         Node::Stub(h) => {
-            panic!("insert reached Stub({})", hex::encode(h))
+            let path_so_far = &key_nibbles[..key_nibbles.len() - suffix_nibbles.len()];
+            let resolved = resolve_stub(h, path_so_far, provider)?;
+            insert_at(resolved, key_nibbles, suffix_nibbles, value, provider)
         }
     }
 }
@@ -514,54 +591,99 @@ fn skip_or<H: Hasher>(path: Vec<u8>, child: Node<H>) -> Node<H> {
     }
 }
 
-fn get_at<'a, H: Hasher>(node: &'a Node<H>, suffix_nibbles: &[u8]) -> Option<&'a [u8]> {
+fn get_at<'a, H: Hasher, P: NodeProvider<H>>(
+    node: &'a mut Node<H>,
+    key_nibbles: &[u8],
+    suffix_nibbles: &[u8],
+    provider: &P,
+) -> Result<Option<&'a [u8]>, TrieError<H>> {
+    if let Node::Stub(h) = &*node {
+        let h = *h;
+        let path_so_far = &key_nibbles[..key_nibbles.len() - suffix_nibbles.len()];
+        *node = resolve_stub(h, path_so_far, provider)?;
+    }
     match node {
-        Node::Leaf { path, value } if path == suffix_nibbles => Some(value.as_slice()),
-        Node::Skip { path, child } if suffix_nibbles.starts_with(path) => {
-            get_at(child, &suffix_nibbles[path.len()..])
+        Node::Leaf { path, value } => {
+            if path.as_slice() == suffix_nibbles {
+                Ok(Some(value.as_slice()))
+            } else {
+                Ok(None)
+            }
         }
-        Node::Fork { value, .. } if suffix_nibbles.is_empty() => value.as_deref(),
-        Node::Fork { children, .. } => children[suffix_nibbles[0] as usize]
-            .as_ref()
-            .and_then(|c| get_at(c, &suffix_nibbles[1..])),
-        _ => None,
+        Node::Skip { path, child } => {
+            if suffix_nibbles.starts_with(path.as_slice()) {
+                let plen = path.len();
+                get_at(child, key_nibbles, &suffix_nibbles[plen..], provider)
+            } else {
+                Ok(None)
+            }
+        }
+        Node::Fork { children, value } => match suffix_nibbles.split_first() {
+            None => Ok(value.as_deref()),
+            Some((&n, rest)) => match &mut children[n as usize] {
+                Some(c) => get_at(c, key_nibbles, rest, provider),
+                None => Ok(None),
+            },
+        },
+        Node::Null => Ok(None),
+        Node::Stub(_) => unreachable!("resolved above"),
     }
 }
 
-fn remove_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8]) -> (Node<H>, bool) {
+fn remove_at<H: Hasher, P: NodeProvider<H>>(
+    node: Node<H>,
+    key_nibbles: &[u8],
+    suffix_nibbles: &[u8],
+    provider: &P,
+) -> Result<(Node<H>, bool), TrieError<H>> {
+    let path_so_far = &key_nibbles[..key_nibbles.len() - suffix_nibbles.len()];
     match node {
-        Node::Leaf { ref path, .. } if path == suffix_nibbles => (Node::Null, true),
+        Node::Leaf { ref path, .. } if path.as_slice() == suffix_nibbles => {
+            Ok((Node::Null, true))
+        }
+        Node::Leaf { .. } => Ok((node, false)),
         Node::Skip { path, child } if suffix_nibbles.starts_with(&path) => {
-            let (child, removed) = remove_at(*child, &suffix_nibbles[path.len()..]);
+            let plen = path.len();
+            let (child, removed) =
+                remove_at(*child, key_nibbles, &suffix_nibbles[plen..], provider)?;
             if !removed {
-                return (
+                return Ok((
                     Node::Skip {
                         path,
                         child: Box::new(child),
                     },
                     false,
-                );
+                ));
             }
-            (
-                normalize(Node::Skip {
-                    path,
-                    child: Box::new(child),
-                }),
+            Ok((
+                normalize(
+                    Node::Skip {
+                        path,
+                        child: Box::new(child),
+                    },
+                    path_so_far,
+                    provider,
+                )?,
                 true,
-            )
+            ))
         }
+        Node::Skip { path, child } => Ok((Node::Skip { path, child }, false)),
         Node::Fork { children, value } if suffix_nibbles.is_empty() => {
             let removed = value.is_some();
             if !removed {
-                return (Node::Fork { children, value }, false);
+                return Ok((Node::Fork { children, value }, false));
             }
-            (
-                normalize(Node::Fork {
-                    children,
-                    value: None,
-                }),
+            Ok((
+                normalize(
+                    Node::Fork {
+                        children,
+                        value: None,
+                    },
+                    path_so_far,
+                    provider,
+                )?,
                 true,
-            )
+            ))
         }
         Node::Fork {
             mut children,
@@ -569,28 +691,41 @@ fn remove_at<H: Hasher>(node: Node<H>, suffix_nibbles: &[u8]) -> (Node<H>, bool)
         } => {
             let i = suffix_nibbles[0] as usize;
             let Some(child) = children[i].take() else {
-                return (Node::Fork { children, value }, false);
+                return Ok((Node::Fork { children, value }, false));
             };
-            let (child, removed) = remove_at(*child, &suffix_nibbles[1..]);
+            let (child, removed) =
+                remove_at(*child, key_nibbles, &suffix_nibbles[1..], provider)?;
             children[i] = match child {
                 Node::Null => None,
                 c => Some(Box::new(c)),
             };
             if !removed {
-                return (Node::Fork { children, value }, false);
+                return Ok((Node::Fork { children, value }, false));
             }
-            (normalize(Node::Fork { children, value }), true)
+            Ok((
+                normalize(Node::Fork { children, value }, path_so_far, provider)?,
+                true,
+            ))
         }
+        Node::Null => Ok((Node::Null, false)),
         Node::Stub(h) => {
-            panic!("remove reached Stub({})", hex::encode(h))
+            let resolved = resolve_stub(h, path_so_far, provider)?;
+            remove_at(resolved, key_nibbles, suffix_nibbles, provider)
         }
-        node => (node, false),
     }
 }
 
 /// Restore canonical shape after a child changed. Only meaningful on a node
-/// whose subtree was just modified.
-fn normalize<H: Hasher>(node: Node<H>) -> Node<H> {
+/// whose subtree was just modified. `path_so_far` is this node's own path —
+/// needed only for the Fork-collapse arm, which may have to resolve the
+/// surviving sibling: it hangs off a different nibble of the Fork, so it was
+/// never on the removed key's path and no inclusion proof for that key can
+/// contain it (PLAN.md §1).
+fn normalize<H: Hasher, P: NodeProvider<H>>(
+    node: Node<H>,
+    path_so_far: &[u8],
+    provider: &P,
+) -> Result<Node<H>, TrieError<H>> {
     match node {
         Node::Fork {
             mut children,
@@ -599,18 +734,27 @@ fn normalize<H: Hasher>(node: Node<H>) -> Node<H> {
             let occupied: Vec<usize> = (0..16).filter(|&i| children[i].is_some()).collect();
             match (occupied.len(), &value) {
                 // Only the value slot survives: a leaf with an empty path.
-                (0, Some(_)) => Node::Leaf {
+                (0, Some(_)) => Ok(Node::Leaf {
                     path: Vec::new(),
                     value: value.unwrap(),
-                },
-                (0, None) => Node::Null,
+                }),
+                (0, None) => Ok(Node::Null),
                 // Exactly one child and no value: the fork disappears and its
                 // nibble index becomes a path prefix on the child.
                 (1, None) => {
                     let n = occupied[0];
-                    prepend(n as u8, *children[n].take().unwrap())
+                    let sibling = *children[n].take().unwrap();
+                    let sibling = match sibling {
+                        Node::Stub(h) => {
+                            let mut sibling_path = path_so_far.to_vec();
+                            sibling_path.push(n as u8);
+                            resolve_stub(h, &sibling_path, provider)?
+                        }
+                        other => other,
+                    };
+                    Ok(prepend(n as u8, sibling))
                 }
-                _ => Node::Fork { children, value },
+                _ => Ok(Node::Fork { children, value }),
             }
         }
         Node::Skip { path, child } => match *child {
@@ -619,7 +763,7 @@ fn normalize<H: Hasher>(node: Node<H>) -> Node<H> {
             Node::Leaf { path: cp, value } => {
                 let mut p = path;
                 p.extend_from_slice(&cp);
-                Node::Leaf { path: p, value }
+                Ok(Node::Leaf { path: p, value })
             }
             Node::Skip {
                 path: cp,
@@ -627,23 +771,30 @@ fn normalize<H: Hasher>(node: Node<H>) -> Node<H> {
             } => {
                 let mut p = path;
                 p.extend_from_slice(&cp);
-                Node::Skip { path: p, child: gc }
+                Ok(Node::Skip { path: p, child: gc })
             }
-            Node::Null => Node::Null,
-            c => Node::Skip {
+            Node::Null => Ok(Node::Null),
+            c @ Node::Fork { .. } => Ok(Node::Skip {
                 path,
                 child: Box::new(c),
-            },
+            }),
+            c @ Node::Stub(_) => Ok(Node::Skip {
+                path,
+                child: Box::new(c),
+            }),
         },
-        Node::Stub(h) => {
-            panic!("normalize reached Stub({})", hex::encode(h))
-        }
-        node => node,
+        // normalize is only ever called on a freshly-reconstructed Fork or
+        // Skip; these arms are unreachable but kept explicit rather than a
+        // wildcard (PLAN.md §3.2).
+        Node::Leaf { .. } | Node::Null | Node::Stub(_) => Ok(node),
     }
 }
 
 /// Push nibble `n` onto the front of `node`'s path, wrapping in a Skip when
-/// the node has no path of its own.
+/// the node has no path of its own. `node` must already be resolved: this
+/// only ever runs on the output of [`normalize`]'s Fork-collapse arm, which
+/// resolves a `Stub` sibling before calling here (PTRIE.md §1: resolution is
+/// one level deep, so `node`'s own children may still be Stubs — untouched).
 fn prepend<H: Hasher>(n: u8, node: Node<H>) -> Node<H> {
     match node {
         Node::Leaf { path, value } => {
@@ -662,7 +813,7 @@ fn prepend<H: Hasher>(n: u8, node: Node<H>) -> Node<H> {
         },
         Node::Null => Node::Null,
         Node::Stub(h) => {
-            panic!("prepend reached Stub({})", hex::encode(h))
+            unreachable!("normalize resolves the sibling before prepend: Stub({h:?})")
         }
     }
 }
@@ -754,6 +905,19 @@ pub fn build_partial<H: Hasher>(nodes: &BTreeMap<H::Out, Vec<u8>>, root: &H::Out
         Some(bytes) => decode_node(nodes, bytes),
         None => Node::Stub(*root),
     }
+}
+
+/// This node's own RLP — diagnostics only (e.g. deciding whether a node would
+/// be inlined into its parent or referenced by hash: `node_rlp(n).len() < 32`
+/// iff so). A `Stub` has no RLP of its own, only the hash reference its
+/// parent held, so this returns that hash's bytes rather than encoding
+/// anything.
+pub fn node_rlp<H: Hasher>(node: &Node<H>) -> Vec<u8> {
+    if let Node::Stub(h) = node {
+        return h.as_ref().to_vec();
+    }
+    let mut db = BTreeMap::new();
+    encode_node::<H>(node, &mut db)
 }
 
 /// keccak256(rlp(node)) — the root hash of a trie rooted at this node.
