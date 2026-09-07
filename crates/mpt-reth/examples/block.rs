@@ -35,7 +35,7 @@ use reth_ethereum::{
         BlockReader, HeaderProvider, StateProofProvider, StateProvider, StateProviderBox,
         TransactionVariant,
     },
-    trie::{EMPTY_ROOT_HASH, TrieAccount},
+    trie::{EMPTY_ROOT_HASH, MultiProofTargets, TrieAccount},
 };
 
 use mpt_core::{
@@ -235,11 +235,18 @@ async fn main() -> eyre::Result<()> {
     );
 
     // 4. Bootstrap the partial account trie for block (n-1) from ordinary
-    // inclusion proofs (`state.proof`) — one per touched account, combined
-    // into a single `build_partial` call. `AccountTrieProvider`/`RethProvider`
-    // (below) are the on-demand fallback (Phase B) for anything a plain
-    // proof doesn't carry, e.g. a delete-collapse landing on an unincluded
-    // sibling.
+    // inclusion proofs, batched into ONE `multiproof()` call for every
+    // touched account instead of one `state.proof()` call per account.
+    // Measured on a real 552-account block: per-account `proof()` calls cost
+    // 5.44s of a 9.6s total run -- 552 independent root-to-leaf walks, each
+    // redundantly re-touching the same shared upper trie levels. One
+    // `multiproof()` call visits that shared prefix once and only fans out
+    // where paths actually diverge, same as reth's own native incremental
+    // state-root computation does internally (see PTRIE.md §8.5, where this
+    // was flagged as a follow-up before actually doing it).
+    // `AccountTrieProvider`/`RethProvider` (below) remain the on-demand
+    // fallback (Phase B) for anything this batched proof doesn't carry, e.g.
+    // a delete-collapse landing on an unincluded sibling.
     let state_root_n_minus_1 = db
         .factory()
         .provider()?
@@ -248,6 +255,15 @@ async fn main() -> eyre::Result<()> {
         .state_root();
 
     let proof_state = state_at(n)?;
+
+    let mut proof_targets = MultiProofTargets::default();
+    for &addr in touched_accounts.iter().chain(destroyed.iter()) {
+        let entry = proof_targets.entry(keccak256(addr)).or_default();
+        if let Some(slots) = touched_slots.get(&addr) {
+            entry.extend(slots.iter().map(keccak256));
+        }
+    }
+    let multiproof = proof_state.multiproof(Default::default(), proof_targets)?;
 
     let mut account_witness: BTreeMap<[u8; 32], Vec<u8>> = BTreeMap::new();
     let mut current_leaves: BTreeMap<Address, TrieAccount> = BTreeMap::new();
@@ -258,7 +274,9 @@ async fn main() -> eyre::Result<()> {
             .get(&addr)
             .map(|s| s.iter().copied().collect())
             .unwrap_or_default();
-        let account_proof = proof_state.proof(Default::default(), addr, &slots)?;
+        let account_proof = multiproof
+            .account_proof(addr, &slots)
+            .map_err(|e| eyre::eyre!("account_proof for {addr}: {e}"))?;
 
         for b in &account_proof.proof {
             let bytes = b.to_vec();

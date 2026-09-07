@@ -566,26 +566,24 @@ unavailable:
 - Open read-only with `EthereumNode::provider_factory_builder()
   .open_read_only(spec, ReadOnlyConfig::from_datadir(dir), runtime)` — safe
   against a running node's datadir.
-- **Follow-up, not yet done: batch the witness bootstrap into one
-  `multiproof()` call instead of one `state.proof()` per touched account.**
-  `examples/block.rs` (the yevm block-replay experiment) calls
+- **Done: batch the witness bootstrap into one `multiproof()` call instead of
+  one `state.proof()` per touched account.** `examples/block.rs` used to call
   `state.proof(addr, &slots)` separately for every touched account to build
-  the initial witness — measured on a real 552-account block: **5.44s of a
-  9.6s total run**, i.e. 552 independent trie walks from the root, each
-  paying its own MDBX round-trips. `StateProofProvider::multiproof()`
-  (§8.1/§9) already accepts a `MultiProofTargets` map keyed by *many*
-  hashed addresses at once (see `crates/rpc/rpc-eth-api/src/helpers/state.rs`'s
-  `get_multi_proof` in reth itself for the exact usage pattern: build one
-  `MultiProofTargets`, one call, then split `multiproof.account_proof(addr,
-  &slots)` back out per account) — one round trip instead of N. The tradeoff:
-  `proof()` conveniently hands back a decoded `AccountProof` (nonce, balance,
-  storageRoot, codeHash already parsed); `multiproof()` returns raw
-  `account_subtree`/`storages[addr].subtree` nodes only, so switching means
-  decoding each touched account's `TrieAccount` leaf ourselves from the
-  reconstructed `Node<Keccak256>` (`build_partial` + a leaf lookup) instead
-  of trusting `.info`. Expected payoff: this is the single largest cost in
-  the whole block-replay run by a wide margin (bigger than yevm execution
-  itself), so batching it should cut total run time roughly in half.
+  the initial witness — measured on a real 552-account block: 5.44s of a
+  9.6s total run, i.e. 552 independent trie walks from the root, each paying
+  its own MDBX round-trips. Switched to building one `MultiProofTargets` map
+  (keyed by hashed address, one call to `StateProofProvider::multiproof()`),
+  then calling `multiproof.account_proof(addr, &slots)` per account to pull
+  the *same* `AccountProof` shape back out — reth already provides that
+  convenience method, so the predicted tradeoff ("switching means decoding
+  the `TrieAccount` leaf ourselves") turned out not to be necessary at all;
+  `account_proof()` does exactly what `state.proof()` did, just sourced from
+  one shared multiproof instead of its own independent walk. Measured
+  payoff, same real datadir, a comparable block (1276 accounts, more than
+  double the original 552): **2.95s cold, 0.42–0.46s warm** for the entire
+  multiproof call — roughly 2x faster cold, ~12x faster warm, than the old
+  per-account approach was for *half* as many accounts. Total run time for a
+  fresh ~550-account block dropped from ~9.6s to ~3.6s.
 
 ### 8.6 Worth reading first
 
