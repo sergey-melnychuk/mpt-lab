@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MPT Explorer</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --border: #dcdad4;
+    --text: #1d1b16;
+    --muted: #6b6862;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --leaf: #1f8a5f;
+    --leaf-bg: #e7f5ee;
+    --skip: #2563eb;
+    --skip-bg: #e8effe;
+    --fork: #b45309;
+    --fork-bg: #fbf0dd;
+    --stub: #8a8577;
+    --stub-bg: #efeee9;
+    --null: #a3a096;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171613;
+      --panel: #201f1b;
+      --border: #3a3833;
+      --text: #ece9e2;
+      --muted: #9c988e;
+
+      --leaf: #4ad393;
+      --leaf-bg: #163227;
+      --skip: #7aa2f7;
+      --skip-bg: #1b2a4a;
+      --fork: #e3a13c;
+      --fork-bg: #3a2c14;
+      --stub: #8a8577;
+      --stub-bg: #2a2823;
+      --null: #6b675e;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12.5px; }
+  header a {
+    margin-left: auto;
+    color: var(--text);
+    font-size: 12.5px;
+    text-decoration: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 9px;
+    white-space: nowrap;
+  }
+  header a:hover { border-color: var(--muted); }
+
+  #mn-layout {
+    padding: 16px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .panel + .panel { margin-top: 16px; }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+
+  input[type=text] {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+  }
+  /* Wide enough for a full "0x" + 64 hex digit value (66 chars) without
+     scrolling or clipping -- RPC URLs are comparable length in practice. */
+  #mn-rpc, #mn-address {
+    display: block;
+    width: 69ch;
+    max-width: 100%;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .slot-row { display: flex; gap: 6px; align-items: stretch; width: 69ch; max-width: 100%; }
+  .slot-row input { flex: 1; min-width: 0; width: auto; font-family: var(--mono); font-size: 13px; }
+  .square-btn {
+    flex: none;
+    width: 34px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+  }
+  #mn-slot-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  button {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+  button.small { padding: 2px 7px; font-size: 12px; }
+  button:disabled { opacity: .4; cursor: default; }
+
+  .mode-toggle { display: flex; gap: 4px; margin-bottom: 10px; }
+  .mode-toggle button { flex: 1; }
+  .mode-toggle button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+
+  #mn-canvas-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+  canvas { display: block; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  td.mono-hash { color: var(--muted); }
+
+  #mn-status, #mn-patch-status { min-height: 18px; font-size: 12.5px; color: var(--muted); margin-top: 6px; white-space: pre-wrap; }
+  #mn-status.error, #mn-patch-status.error { color: #c0392b; }
+  #mn-status.ok, #mn-patch-status.ok { color: var(--leaf); }
+  p.hint { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; }
+  code { font-family: var(--mono); background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+
+  label { display: block; font-size: 11.5px; color: var(--muted); margin: 8px 0 3px; }
+  label:first-child { margin-top: 0; }
+  table.kv-table { width: 100%; }
+  table.kv-table th { width: 110px; color: var(--muted); font-weight: 500; vertical-align: top; }
+  table.kv-table td { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  #mn-kv-table th { width: auto; }
+  #mn-kv-table td { vertical-align: middle; }
+  #mn-kv-wrap { margin-bottom: 10px; overflow-x: auto; }
+  .kv-input { width: 69ch; max-width: 100%; font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MPT Explorer</h1>
+  <span class="sub">mpt-core compiled to wasm &mdash; a live radix-16 Merkle Patricia Trie, built from real <code>eth_getProof</code> witnesses</span>
+  <a href="build.html">Build a trie from scratch &rarr;</a>
+</header>
+
+<div id="mn-layout">
+  <div class="panel">
+    <div class="mode-toggle">
+      <button id="mn-mode-fetch" class="active" type="button">Account</button>
+      <button id="mn-mode-account" type="button">Account trie</button>
+      <button id="mn-mode-storage" type="button">Storage trie</button>
+      <button id="mn-mode-kv" type="button">Storage KV</button>
+    </div>
+
+    <div id="mn-fetch-wrap">
+      <h2>Fetch a real account + slot</h2>
+      <form id="mn-form">
+        <label>RPC URL</label>
+        <input id="mn-rpc" type="text" value="https://eth-mainnet.public.blastapi.io" required />
+        <label>Address</label>
+        <input id="mn-address" type="text" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" required />
+        <label>Storage slot(s) &mdash; leave the first blank for account only</label>
+        <div id="mn-slot-list"></div>
+        <label>Block &mdash; number, 0x-hex, or "latest"</label>
+        <div class="slot-row">
+          <input id="mn-block" type="text" value="latest" required />
+          <button id="mn-block-refresh" type="button" class="square-btn" title="Re-pin &quot;latest&quot; to whatever block is current right now, and re-fetch">&#8635;</button>
+        </div>
+        <button class="primary" type="submit" style="margin-top:10px">Fetch witness</button>
+      </form>
+      <p class="hint">
+        Needs an archive node for anything but recent blocks &mdash; a pruned
+        full node only keeps the last ~128 blocks of state
+        (<code>missing trie node</code> means you hit that wall). Separately,
+        several public RPCs (publicnode's default endpoint included) reject
+        <code>eth_getProof</code> outright on their free tier &mdash; for
+        every block, not just old ones &mdash; with an "Archive requests
+        require a personal token" error; the endpoint pre-filled above is one
+        that doesn't.
+      </p>
+      <div id="mn-status"></div>
+
+      <div id="mn-info" hidden>
+        <h2>Account at block <span id="mn-block-number"></span></h2>
+        <table class="kv-table">
+          <tr><th>address</th><td id="mn-out-address"></td></tr>
+          <tr><th>balance</th><td id="mn-out-balance"></td></tr>
+          <tr><th>nonce</th><td id="mn-out-nonce"></td></tr>
+          <tr><th>codeHash</th><td id="mn-out-codehash"></td></tr>
+          <tr><th>storageHash</th><td id="mn-out-storagehash"></td></tr>
+          <tr><th>stateRoot</th><td id="mn-out-stateroot"></td></tr>
+        </table>
+        <p class="hint">
+          Both roots above were independently re-derived from the fetched proof
+          nodes by <code>mpt-core</code>, not just copied from the RPC response
+          &mdash; if the provider sent tampered or incomplete data, the
+          recomputed hash would not match and this would say so.
+        </p>
+      </div>
+    </div>
+
+    <div id="mn-canvas-wrap" hidden><canvas id="mn-tree"></canvas></div>
+
+    <div id="mn-kv-wrap" hidden>
+      <table class="kv-table" id="mn-kv-table">
+        <thead><tr><th>slot</th><th>value</th><th>patch to</th><th></th></tr></thead>
+        <tbody id="mn-kv-body"></tbody>
+      </table>
+      <p class="hint">
+        Setting a currently-absent slot always works standalone &mdash;
+        <code>eth_getProof</code> for a zero slot IS an exclusion proof,
+        which is all an insert needs. Zeroing a slot usually works
+        standalone too, UNLESS it collapses a Fork whose surviving sibling
+        isn't in this witness: that one case fails with the exact node
+        (hash + path) a public RPC cannot supply &mdash; see PTRIE.md
+        &sect;8 / PLAN.md &sect;1. That's a real gap in what
+        <code>eth_getProof</code> can express, not a bug in this page.
+      </p>
+      <div id="mn-patch-status"></div>
+    </div>
+
+    <div class="legend" id="mn-legend" hidden>
+      <span><i class="swatch" style="background:var(--leaf)"></i>Leaf</span>
+      <span><i class="swatch" style="background:var(--skip)"></i>Skip (extension)</span>
+      <span><i class="swatch" style="background:var(--fork)"></i>Fork (branch)</span>
+      <span><i class="swatch" style="background:var(--null)"></i>Null</span>
+      <span><i class="swatch" style="background:var(--stub); border:1px dashed var(--stub)"></i>Stub &mdash; not in this witness</span>
+    </div>
+    <p class="hint" id="mn-tree-hint" hidden>
+      Solid cells in a Fork's strip are real and clickable; dashed ones are
+      <code>Stub</code>s &mdash; nothing behind them to explore, so they
+      don't respond to clicks. A proof for a SINGLE key only ever has one
+      real nibble per Fork (everything else on that key's path is a Stub by
+      construction), so most of a strip being non-interactive here is
+      expected, not broken. Fetch more than one slot at once to get Forks
+      with two-or-more real, clickable branches.
+    </p>
+  </div>
+</div>
+
+<script type="module">
+import init, {
+  WasmProofTrie,
+  keccak256_hex,
+  rlp_trimmed_string_hex,
+  rlp_decode_string_hex,
+  rlp_account_hex,
+} from "./pkg/mpt_wasm.js";
+import { drawTreeJson, placeholder } from "./tree-view.js";
+
+await init();
+
+const $ = (id) => document.getElementById(id);
+
+async function rpcCall(url, method, params) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} from RPC (CORS, or the endpoint is down)`);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message ?? JSON.stringify(json.error));
+  return json.result;
+}
+
+let mnAccountTrie = null;
+let mnStorageTrie = null;
+let mnMode = "fetch"; // "fetch" | "account" | "storage" | "kv"
+let mnFetched = null; // { rpc, address, blockHex, block, proof, slots }
+let mnContext = null; // { address, blockHex } of whatever is CURRENTLY loaded
+// slot hex (as typed) -> { originalValue: hex } -- accumulates across
+// fetches within one context; a page reload is the reset button.
+let mnStorageSlots = new Map();
+// "latest" resolves to this exact block once, then stays pinned -- see the
+// comment in the mn-form submit handler for why that matters.
+let mnPinnedLatestBlockHex = null;
+// Slots queued to fetch next: one input row per slot. Row 0 always exists
+// (starts pre-filled with a real default) and is never removable; rows
+// added after it via "+" can each be removed with their own "×".
+let mnPendingSlots = ["0xb47819dbb2d5e5b541bfa5fb020cad7be8f7e145ac60296fedb74a78826b7375"];
+
+// Row 0 is the permanent slot: always present, never removable, and its
+// trailing button is always "+" (append a new, removable row after it).
+// Every other row is removable and gets "×" instead. Typing directly edits
+// mnPendingSlots[i] -- there's no separate "staging" field.
+function renderPendingSlots() {
+  const list = $("mn-slot-list");
+  list.innerHTML = "";
+  mnPendingSlots.forEach((slot, i) => {
+    const row = document.createElement("div");
+    row.className = "slot-row";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "0x...";
+    input.value = slot;
+    input.addEventListener("input", () => {
+      mnPendingSlots[i] = input.value;
+    });
+    row.appendChild(input);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "square-btn";
+    if (i === 0) {
+      btn.textContent = "+";
+      btn.setAttribute("aria-label", "add another slot");
+      btn.addEventListener("click", () => {
+        mnPendingSlots.push("");
+        renderPendingSlots();
+        const rows = $("mn-slot-list").children;
+        rows[rows.length - 1].children[0].focus();
+      });
+    } else {
+      btn.textContent = "×";
+      btn.setAttribute("aria-label", "remove this slot");
+      btn.addEventListener("click", () => {
+        mnPendingSlots.splice(i, 1);
+        renderPendingSlots();
+      });
+    }
+    row.appendChild(btn);
+
+    list.appendChild(row);
+  });
+}
+
+function mnSetStatus(msg, kind) {
+  const el = $("mn-status");
+  el.textContent = msg;
+  el.className = kind ?? "";
+}
+function mnSetPatchStatus(msg, kind) {
+  const el = $("mn-patch-status");
+  el.textContent = msg;
+  el.className = kind ?? "";
+}
+
+$("mn-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const rpc = $("mn-rpc").value.trim();
+  const address = $("mn-address").value.trim();
+  const slots = mnPendingSlots.map((s) => s.trim()).filter(Boolean);
+  const blockArg = $("mn-block").value.trim();
+
+  mnSetStatus("fetching…");
+  try {
+    // "latest" is pinned to a concrete block ONCE per session and reused
+    // after that -- NOT re-resolved on every fetch. Blocks land every ~12s,
+    // so re-resolving "latest" each time (the field's default value) would
+    // make it a moving target: two fetches in a row would almost always land
+    // on different blocks, "sameContext" below would never be true, and
+    // every fetch would silently reset instead of accumulating. Explicitly
+    // typing a different block number still starts a fresh context, exactly
+    // as intended; a page reload clears the pin.
+    let blockHex = blockArg;
+    if (blockArg === "latest" || blockArg === "") {
+      blockHex = mnPinnedLatestBlockHex ?? (await rpcCall(rpc, "eth_blockNumber", []));
+      mnPinnedLatestBlockHex = blockHex;
+    } else if (!blockArg.startsWith("0x")) {
+      blockHex = "0x" + BigInt(blockArg).toString(16);
+    }
+
+    const [block, proof] = await Promise.all([
+      rpcCall(rpc, "eth_getBlockByNumber", [blockHex, false]),
+      rpcCall(rpc, "eth_getProof", [address, slots, blockHex]),
+    ]);
+    if (!block) throw new Error(`no block ${blockHex} (bad number, or this RPC doesn't have it)`);
+
+    // Same account trie IFF same block: the state trie is ONE global trie for
+    // the whole chain at a given block, so two fetches at the same block --
+    // even for different addresses -- are two partial views into the SAME
+    // trie and can be merged. A different block (or the very first fetch)
+    // means a different root entirely; nothing to merge into, start fresh.
+    const sameContext = mnContext && mnContext.address.toLowerCase() === address.toLowerCase() && mnContext.blockHex === blockHex;
+
+    if (sameContext && mnAccountTrie) {
+      mnAccountTrie.add_witness(JSON.stringify(proof.accountProof));
+    } else {
+      mnAccountTrie = WasmProofTrie.from_witness(block.stateRoot, JSON.stringify(proof.accountProof));
+      mnStorageTrie = null;
+      mnStorageSlots = new Map();
+    }
+    const accountRootOk = mnAccountTrie.hash() === block.stateRoot.slice(2);
+
+    let storageRootOk = true;
+    if (slots.length > 0) {
+      const allStorageNodes = proof.storageProof.flatMap((sp) => sp.proof);
+      if (sameContext && mnStorageTrie) {
+        mnStorageTrie.add_witness(JSON.stringify(allStorageNodes));
+      } else {
+        mnStorageTrie = WasmProofTrie.from_witness(proof.storageHash, JSON.stringify(allStorageNodes));
+      }
+      storageRootOk = mnStorageTrie.hash() === proof.storageHash.slice(2);
+      for (const sp of proof.storageProof) {
+        if (!mnStorageSlots.has(sp.key)) mnStorageSlots.set(sp.key, { originalValue: sp.value });
+      }
+    }
+
+    mnContext = { address, blockHex };
+    mnFetched = { rpc, address, blockHex, block, proof, slots };
+
+    mnSetStatus(
+      accountRootOk && storageRootOk
+        ? `fetched at block ${parseInt(blockHex, 16)}${sameContext ? " (merged into what was already loaded)" : ""} — both roots independently re-derived and verified`
+        : "fetched, but a recomputed root did NOT match what the RPC claimed — do not trust this response",
+      accountRootOk && storageRootOk ? "ok" : "error",
+    );
+
+    $("mn-info").hidden = false;
+    $("mn-block-number").textContent = parseInt(blockHex, 16);
+    $("mn-out-address").textContent = proof.address;
+    $("mn-out-balance").textContent = `${BigInt(proof.balance)} wei`;
+    $("mn-out-nonce").textContent = BigInt(proof.nonce).toString();
+    $("mn-out-codehash").textContent = proof.codeHash;
+    $("mn-out-storagehash").textContent = proof.storageHash;
+    $("mn-out-stateroot").textContent = block.stateRoot;
+
+    renderMainnetTree();
+  } catch (err) {
+    mnSetStatus(`error: ${err.message ?? err}`, "error");
+  }
+});
+
+// Un-pins "latest" (see the comment on mnPinnedLatestBlockHex above) and
+// re-fetches through the normal submit handler, so a genuinely later block
+// picks up here -- the sameContext check in that handler already treats a
+// different block as nothing-to-merge-into and starts a fresh trie, exactly
+// as it should when the block itself has moved on.
+$("mn-block-refresh").addEventListener("click", () => {
+  mnPinnedLatestBlockHex = null;
+  $("mn-block").value = "latest";
+  $("mn-form").requestSubmit();
+});
+
+for (const mode of ["fetch", "account", "storage", "kv"]) {
+  $(`mn-mode-${mode}`).addEventListener("click", () => {
+    mnMode = mode;
+    mnModeButtons();
+    renderMainnetTree();
+  });
+}
+
+function mnModeButtons() {
+  for (const mode of ["fetch", "account", "storage", "kv"]) {
+    $(`mn-mode-${mode}`).classList.toggle("active", mnMode === mode);
+  }
+}
+
+function renderMainnetTree() {
+  $("mn-fetch-wrap").hidden = mnMode !== "fetch";
+  $("mn-canvas-wrap").hidden = mnMode !== "account" && mnMode !== "storage";
+  $("mn-kv-wrap").hidden = mnMode !== "kv";
+  $("mn-legend").hidden = mnMode !== "account" && mnMode !== "storage";
+  $("mn-tree-hint").hidden = mnMode !== "account" && mnMode !== "storage";
+
+  if (mnMode === "kv") {
+    renderStorageKv();
+    return;
+  }
+  if (mnMode === "fetch") return;
+
+  const canvas = $("mn-tree");
+  if (mnMode === "account" && mnAccountTrie) {
+    drawTreeJson(canvas, mnAccountTrie.to_json(), renderMainnetTree);
+  } else if (mnMode === "storage" && mnStorageTrie) {
+    drawTreeJson(canvas, mnStorageTrie.to_json(), renderMainnetTree);
+  } else if (mnMode === "storage") {
+    placeholder(canvas, "No slots were fetched for this account.");
+  } else {
+    placeholder(canvas, "Fetch a witness first.");
+  }
+}
+
+// Flat key/value view of every slot fetched so far (accumulated across
+// incremental fetches), each with its own patch/revert -- this is what
+// replaced the old single-slot patch form, which lived far from the data it
+// operated on.
+function renderStorageKv() {
+  const body = $("mn-kv-body");
+  body.innerHTML = "";
+
+  if (!mnStorageTrie || mnStorageSlots.size === 0) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.style.color = "var(--muted)";
+    td.textContent = "No slots fetched yet.";
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+
+  for (const [slotHex, info] of mnStorageSlots) {
+    const tr = document.createElement("tr");
+
+    const slotTd = document.createElement("td");
+    slotTd.className = "mono-hash";
+    slotTd.textContent = slotHex;
+    tr.appendChild(slotTd);
+
+    const valueTd = document.createElement("td");
+    valueTd.className = "mono-hash";
+    try {
+      const raw = mnStorageTrie.get(mnSlotTrieKey(slotHex));
+      valueTd.textContent = raw != null ? "0x" + rlp_decode_string_hex(raw) : "(absent)";
+    } catch (e) {
+      valueTd.textContent = "?";
+      valueTd.title = describeMissingNode(e, "storage");
+    }
+    tr.appendChild(valueTd);
+
+    const inputTd = document.createElement("td");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "kv-input";
+    input.placeholder = "new value, hex";
+    inputTd.appendChild(input);
+    tr.appendChild(inputTd);
+
+    const actionsTd = document.createElement("td");
+    const updateBtn = document.createElement("button");
+    updateBtn.className = "small";
+    updateBtn.type = "button";
+    updateBtn.textContent = "update";
+    updateBtn.addEventListener("click", () => {
+      try {
+        applyStoragePatch(slotHex, input.value.trim());
+      } catch (err) {
+        mnSetPatchStatus(describeMissingNode(err, "storage"), "error");
+      }
+      renderStorageKv();
+    });
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "small";
+    removeBtn.type = "button";
+    removeBtn.textContent = "remove";
+    removeBtn.addEventListener("click", () => {
+      try {
+        applyStoragePatch(slotHex, "0x0");
+      } catch (err) {
+        mnSetPatchStatus(describeMissingNode(err, "storage"), "error");
+      }
+      renderStorageKv();
+    });
+    const revertBtn = document.createElement("button");
+    revertBtn.className = "small";
+    revertBtn.type = "button";
+    revertBtn.textContent = "revert";
+    revertBtn.addEventListener("click", () => {
+      try {
+        applyStoragePatch(slotHex, info.originalValue);
+      } catch (err) {
+        mnSetPatchStatus(describeMissingNode(err, "storage"), "error");
+      }
+      renderStorageKv();
+    });
+    actionsTd.appendChild(updateBtn);
+    actionsTd.appendChild(removeBtn);
+    actionsTd.appendChild(revertBtn);
+    tr.appendChild(actionsTd);
+
+    body.appendChild(tr);
+  }
+}
+
+function describeMissingNode(e, which) {
+  try {
+    const err = JSON.parse(e);
+    if (err.kind === "MissingNode") {
+      return (
+        `can't apply this patch: the ${which} trie needs a node this witness doesn't have\n` +
+        `  hash: ${err.hash}\n  path: /${err.path}\n` +
+        `This is PLAN.md §1's exact gap: eth_getProof can't be steered to fetch a ` +
+        `specific node by path, so a public RPC has no way to supply this one. A DB-level ` +
+        `path-directed multiproof (PTRIE.md §8, mpt-reth's RethProvider) can.`
+      );
+    }
+    return `error: ${JSON.stringify(err)}`;
+  } catch {
+    return `error: ${e}`;
+  }
+}
+
+// eth_getProof echoes a storage slot back exactly as requested ("0x0" stays
+// "0x0"), but the secure-trie key is keccak256 of the slot as a FULL 32-byte
+// word -- Solidity storage slots are always 256 bits, regardless of how few
+// hex digits the "quantity" encoding uses to write one down. Hashing the
+// unpadded bytes silently asks for a different (nonexistent) trie path.
+function mnSlotTrieKey(slotHex) {
+  const digits = slotHex.replace(/^0x/, "");
+  const padded = "0".repeat(Math.max(0, 64 - digits.length)) + digits;
+  return "0x" + keccak256_hex("0x" + padded);
+}
+
+// Shared by the KV table's per-row "apply"/"revert" buttons. Throws (a JSON
+// MissingNode string, or a plain Error) on failure -- callers decide how to
+// report it, since they know which UI it's happening in.
+function applyStoragePatch(slotHex, valueHex) {
+  const key = mnSlotTrieKey(slotHex);
+  const isZero = /^0x0*$/.test(valueHex || "0x0");
+  if (isZero) {
+    const removed = mnStorageTrie.remove(key);
+    mnSetPatchStatus(
+      removed
+        ? `removed ${slotHex} — new storageRoot ${mnStorageTrie.hash()}`
+        : `${slotHex} was already absent`,
+      "ok",
+    );
+  } else {
+    const rlpValue = "0x" + rlp_trimmed_string_hex(valueHex);
+    mnStorageTrie.insert(key, rlpValue);
+    mnSetPatchStatus(`set ${slotHex} = ${valueHex} — new storageRoot ${mnStorageTrie.hash()}`, "ok");
+  }
+  propagateStorageRootToAccount();
+}
+
+/// Re-insert the account leaf with the storage trie's new root. Hypothetical:
+/// this assumes nothing ELSE in this account's storage changed, which is
+/// almost never true for a busy contract across a real block boundary (a
+/// full block's worth of accounts changing is what full execution, e.g.
+/// yevm, or debug_traceBlockByNumber's diff mode, would actually capture).
+function propagateStorageRootToAccount() {
+  if (!mnAccountTrie || !mnFetched) return;
+  try {
+    const newStorageRoot = "0x" + mnStorageTrie.hash();
+    const accountRlp =
+      "0x" +
+      rlp_account_hex(mnFetched.proof.nonce, mnFetched.proof.balance, newStorageRoot, mnFetched.proof.codeHash);
+    const addrKey = "0x" + keccak256_hex(mnFetched.address);
+    mnAccountTrie.insert(addrKey, accountRlp);
+    mnSetPatchStatus(
+      $("mn-patch-status").textContent +
+        `\n\nhypothetical new stateRoot (this account only): ${mnAccountTrie.hash()}\n` +
+        "NOT expected to match the real next block's stateRoot unless this account was " +
+        "the ONLY thing that changed all block.",
+      "ok",
+    );
+  } catch (e) {
+    mnSetPatchStatus($("mn-patch-status").textContent + "\n\n(account trie patch: " + describeMissingNode(e, "account") + ")", "error");
+  }
+}
+
+mnModeButtons();
+renderMainnetTree();
+renderPendingSlots();
+</script>
+</body>
+</html>

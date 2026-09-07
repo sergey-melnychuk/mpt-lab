@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MPT Builder</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --border: #dcdad4;
+    --text: #1d1b16;
+    --muted: #6b6862;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --leaf: #1f8a5f;
+    --leaf-bg: #e7f5ee;
+    --skip: #2563eb;
+    --skip-bg: #e8effe;
+    --fork: #b45309;
+    --fork-bg: #fbf0dd;
+    --stub: #8a8577;
+    --stub-bg: #efeee9;
+    --null: #a3a096;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171613;
+      --panel: #201f1b;
+      --border: #3a3833;
+      --text: #ece9e2;
+      --muted: #9c988e;
+
+      --leaf: #4ad393;
+      --leaf-bg: #163227;
+      --skip: #7aa2f7;
+      --skip-bg: #1b2a4a;
+      --fork: #e3a13c;
+      --fork-bg: #3a2c14;
+      --stub: #8a8577;
+      --stub-bg: #2a2823;
+      --null: #6b675e;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12.5px; }
+  header a {
+    margin-left: auto;
+    color: var(--text);
+    font-size: 12.5px;
+    text-decoration: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 9px;
+    white-space: nowrap;
+  }
+  header a:hover { border-color: var(--muted); }
+
+  #bt-layout {
+    padding: 16px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  #bt-kv-panel { flex: 1 1 calc(45% - 8px); min-width: 340px; }
+  #bt-tree-panel { flex: 1 1 calc(55% - 8px); min-width: 340px; }
+
+  table.kv-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+  table.kv-table th, table.kv-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  table.kv-table th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+  table.kv-table thead th { position: sticky; top: 0; background: var(--panel); }
+  #bt-table-wrap {
+    max-height: 50vh;
+    overflow-y: auto;
+    margin-top: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  #bt-table-wrap table.kv-table { border: none; }
+  #bt-table-wrap td, #bt-table-wrap th { padding-left: 8px; }
+  .kv-input {
+    width: 100%;
+    padding: 5px 7px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-family: var(--mono);
+  }
+
+  button {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  .square-btn {
+    padding: 0;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    line-height: 1;
+  }
+  .button-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+  .check-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .check-btn:hover { border-color: var(--muted); }
+  .check-btn input { margin: 0; cursor: pointer; }
+  .stats { margin-left: auto; color: var(--muted); font-size: 12.5px; font-family: var(--mono); white-space: nowrap; }
+
+  #bt-root-hash {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 8px;
+    word-break: break-all;
+  }
+
+  #bt-canvas-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin-top: 10px; }
+  canvas { display: block; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+  #bt-status { min-height: 18px; font-size: 12.5px; color: var(--muted); margin-top: 10px; white-space: pre-wrap; }
+  #bt-status.error { color: #c0392b; }
+  #bt-status.ok { color: var(--leaf); }
+  code { font-family: var(--mono); background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+
+  .info-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font: italic 11px Georgia, serif;
+    cursor: default;
+    user-select: none;
+  }
+  .info-btn:hover, .info-btn:focus { border-color: var(--muted); color: var(--text); outline: none; }
+  .info-btn .tooltip {
+    /* Explicit, not left to default: `.legend span` (this tooltip is a span
+       nested inside .legend for the canvas info button) would otherwise win
+       and set display:inline-flex, turning the text/<code>Stub</code>/text
+       runs into three side-by-side flex items instead of wrapped text. */
+    display: block;
+    position: absolute;
+    z-index: 10;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: 280px;
+    max-width: min(280px, 80vw);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 12.5px;
+    font-style: normal;
+    font-weight: normal;
+    line-height: 1.5;
+    white-space: normal;
+    color: var(--muted);
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .18);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity .12s ease;
+  }
+  /* Default opens upward (used by the canvas legend's info button, which
+     sits near the bottom of its panel); .tip-below flips it for the KV
+     panel's button, which sits right under the header with no room above. */
+  .info-btn.tip-below .tooltip { bottom: auto; top: calc(100% + 8px); }
+  .info-btn:hover .tooltip, .info-btn:focus .tooltip { opacity: 1; visibility: visible; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MPT Builder</h1>
+  <span class="sub">mpt-core compiled to wasm &mdash; build a radix-16 Merkle Patricia Trie from scratch, Ethereum-style</span>
+  <a href="index.html">&larr; Mainnet explorer</a>
+</header>
+
+<div id="bt-layout">
+  <div class="panel" id="bt-kv-panel">
+    <h2>Key/value pairs</h2>
+    <div class="button-row">
+      <button id="bt-clear" type="button">Clear</button>
+      <button id="bt-add" type="button">+</button>
+      <button type="button" class="rand-btn" data-n="5">+5</button>
+      <button type="button" class="rand-btn" data-n="20">+20</button>
+      <button type="button" class="rand-btn" data-n="100">+100</button>
+      <label class="check-btn"><input type="checkbox" id="bt-hash" checked />Hash</label>
+      <span class="info-btn tip-below" tabindex="0">i<span class="tooltip">
+        Each value is RLP-encoded (leading zero bytes trimmed) before
+        insertion, like a real storage slot. With <b>Hash</b> checked, each
+        key is also keccak256-hashed first &mdash; the "secure trie"
+        transform Ethereum's real state and storage tries apply, so the
+        shape you get matches what <code>eth_getProof</code> would return
+        for the same data. Uncheck it to insert keys as raw bytes instead:
+        keys sharing a hex prefix then share trie structure too, which makes
+        Skip/Fork shapes easier to see than a keccak256 hash's uniform
+        sprawl. Both inputs must be hex (<code>0x</code>-prefixed or not).
+      </span></span>
+      <span id="bt-stats" class="stats"></span>
+    </div>
+    <div id="bt-table-wrap">
+      <table class="kv-table" id="bt-table">
+        <thead><tr><th>key (hex)</th><th>value (hex)</th><th></th></tr></thead>
+        <tbody id="bt-body"></tbody>
+      </table>
+    </div>
+    <div id="bt-status"></div>
+  </div>
+
+  <div class="panel" id="bt-tree-panel">
+    <h2>Trie</h2>
+    <div id="bt-root-hash">root: &mdash;</div>
+    <div id="bt-canvas-wrap"><canvas id="bt-tree"></canvas></div>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--leaf)"></i>Leaf</span>
+      <span><i class="swatch" style="background:var(--skip)"></i>Skip (extension)</span>
+      <span><i class="swatch" style="background:var(--fork)"></i>Fork (branch)</span>
+      <span><i class="swatch" style="background:var(--null)"></i>Null</span>
+      <span class="info-btn" tabindex="0">i<span class="tooltip">
+        This trie is always full &mdash; built directly from the table,
+        never from a witness &mdash; so every node here is real; there are
+        no <code>Stub</code>s to click through, unlike the mainnet
+        explorer's proof-reconstructed trees.
+      </span></span>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import init, { WasmTrie, keccak256_hex, rlp_trimmed_string_hex } from "./pkg/mpt_wasm.js";
+import { drawTreeJson } from "./tree-view.js";
+
+await init();
+
+const $ = (id) => document.getElementById(id);
+
+let btTrie = null;
+let btRows = [
+  { key: "0x01", value: "0x2a" },
+  { key: "0x02", value: "0x539" },
+  { key: "0xff", value: "0x01" },
+];
+
+function setStatus(msg, kind) {
+  const el = $("bt-status");
+  el.textContent = msg;
+  el.className = kind ?? "";
+}
+
+// Row 0..n, each freely editable/removable -- unlike the mainnet page's
+// slot list, every row here (including the first) can be deleted, since
+// there's no "permanent" default once you're building from scratch.
+function renderRows() {
+  const body = $("bt-body");
+  body.innerHTML = "";
+
+  btRows.forEach((row, i) => {
+    const tr = document.createElement("tr");
+
+    const keyTd = document.createElement("td");
+    const keyInput = document.createElement("input");
+    keyInput.type = "text";
+    keyInput.className = "kv-input";
+    keyInput.placeholder = "0x...";
+    keyInput.value = row.key;
+    keyInput.addEventListener("input", () => {
+      row.key = keyInput.value;
+      rebuild();
+    });
+    keyTd.appendChild(keyInput);
+    tr.appendChild(keyTd);
+
+    const valueTd = document.createElement("td");
+    const valueInput = document.createElement("input");
+    valueInput.type = "text";
+    valueInput.className = "kv-input";
+    valueInput.placeholder = "0x...";
+    valueInput.value = row.value;
+    valueInput.addEventListener("input", () => {
+      row.value = valueInput.value;
+      rebuild();
+    });
+    valueTd.appendChild(valueInput);
+    tr.appendChild(valueTd);
+
+    const actionTd = document.createElement("td");
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "square-btn";
+    removeBtn.textContent = "×";
+    removeBtn.setAttribute("aria-label", "remove this row");
+    removeBtn.addEventListener("click", () => {
+      btRows.splice(i, 1);
+      renderRows();
+      rebuild();
+    });
+    actionTd.appendChild(removeBtn);
+    tr.appendChild(actionTd);
+
+    body.appendChild(tr);
+  });
+}
+
+// Rebuilds the whole trie from `btRows` on every edit rather than patching
+// incrementally -- the table IS the source of truth, so re-deriving from it
+// is simpler than tracking insert/remove diffs, and cheap enough at demo
+// scale to run on every keystroke.
+function rebuild() {
+  if (btTrie) btTrie.free();
+  btTrie = new WasmTrie();
+
+  const hashKeys = $("bt-hash").checked;
+  const errors = [];
+  for (const row of btRows) {
+    const keyHex = row.key.trim();
+    const valueHex = row.value.trim();
+    if (!keyHex || !valueHex) continue;
+    try {
+      const trieKey = hashKeys ? "0x" + keccak256_hex(keyHex) : keyHex;
+      const rlpValue = "0x" + rlp_trimmed_string_hex(valueHex);
+      btTrie.insert(trieKey, rlpValue);
+    } catch (e) {
+      errors.push(`key ${keyHex}: ${e}`);
+    }
+  }
+
+  setStatus(errors.join("\n"), errors.length ? "error" : "");
+
+  $("bt-root-hash").textContent = "root: 0x" + btTrie.hash();
+  renderTree();
+}
+
+// Depth = length of the longest root-to-leaf chain of NodeView boxes (same
+// unit the canvas draws in): a Skip or Fork counts as one level, a Leaf/Null
+// terminates it. An empty trie (a bare Null root) is depth 1.
+function treeDepth(view) {
+  if (view.kind === "Skip") return 1 + treeDepth(view.child);
+  if (view.kind === "Fork") {
+    let max = 0;
+    for (const c of view.children ?? []) max = Math.max(max, treeDepth(c.node));
+    return 1 + max;
+  }
+  return 1;
+}
+
+function renderTree() {
+  const canvas = $("bt-tree");
+  const json = btTrie.to_json();
+  drawTreeJson(canvas, json, renderTree);
+
+  const n = btRows.filter((r) => r.key.trim() && r.value.trim()).length;
+  $("bt-stats").textContent = `${n} key${n === 1 ? "" : "s"} · depth ${treeDepth(JSON.parse(json))}`;
+}
+
+$("bt-add").addEventListener("click", () => {
+  btRows.push({ key: "", value: "" });
+  renderRows();
+  const rows = $("bt-body").children;
+  rows[rows.length - 1].querySelector("input").focus();
+});
+
+function randomHex(byteLen) {
+  const bytes = new Uint8Array(byteLen);
+  crypto.getRandomValues(bytes);
+  return "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Random byte lengths (not fixed sizes) so the resulting trie has a mix of
+// Skip/Fork shapes rather than every leaf sitting at the same depth.
+function addRandomRows(n) {
+  for (let i = 0; i < n; i++) {
+    btRows.push({
+      key: randomHex(4 + Math.floor(Math.random() * 13)), // 4..16 bytes
+      value: randomHex(1 + Math.floor(Math.random() * 8)), // 1..8 bytes
+    });
+  }
+  renderRows();
+  rebuild();
+}
+
+document.querySelectorAll(".rand-btn").forEach((btn) => {
+  btn.addEventListener("click", () => addRandomRows(parseInt(btn.dataset.n, 10)));
+});
+
+$("bt-clear").addEventListener("click", () => {
+  btRows = [];
+  renderRows();
+  rebuild();
+});
+
+$("bt-hash").addEventListener("change", rebuild);
+
+renderRows();
+rebuild();
+</script>
+</body>
+</html>

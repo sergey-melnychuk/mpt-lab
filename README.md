@@ -39,6 +39,16 @@ assert_eq!(verify_proof(&root, b"cat", &proof), Ok(None));
 
 `mpt-core` is `no_std` + `alloc` and builds for `wasm32-unknown-unknown`.
 
+## Workspace
+
+This crate is one of three in the workspace:
+
+| Crate | What it is |
+|---|---|
+| [`mpt-core`](crates/mpt-core) | The trie itself — everything on this page. `no_std` + `alloc`, no I/O, no wasm-specific dependencies. |
+| [`mpt-reth`](crates/mpt-reth) | Resolves a partial trie's `Stub`s from a local reth database via path-directed multiproofs — the DB-level counterpart to what `eth_getProof` can't express over RPC (`PTRIE.md` §8). Pulls reth's dependency tree, so it's kept out of the default workspace members. |
+| [`mpt-wasm`](crates/mpt-wasm) | `mpt-core` compiled to wasm behind two browser pages: one reconstructs and independently verifies a real account/storage trie from a live `eth_getProof` witness, the other builds an Ethereum-style trie from scratch out of key/value pairs you type in. |
+
 ## Features
 
 - Insert, get, and delete with correct canonical collapse
@@ -126,7 +136,10 @@ or costs, roughly in that order.
 - Node-db pruning. Deletion orphans entries; nothing reference-counts them.
 - Iteration over key/value pairs.
 - Fuzzing against a reference implementation such as `alloy-trie`.
-- Verifying a proof against real mainnet state via `eth_getProof`.
+
+Verifying a proof against real mainnet state via `eth_getProof` is done —
+see `crates/mpt-core/examples/live.rs` for the minimal version and
+`crates/mpt-wasm` for an interactive one.
 
 ## References
 
@@ -135,3 +148,7 @@ or costs, roughly in that order.
 - RFC 6962 (Certificate Transparency) — for the binary tree's audit paths and
   the `tree_size` authentication problem
 - CVE-2012-2459 — why duplicating an odd tail node is unsafe
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

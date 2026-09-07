@@ -1,0 +1,41 @@
+[package]
+name = "mpt-wasm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "wasm-bindgen glue around mpt-core, backing the browser demo pages under www/"
+repository = "https://github.com/sergey-melnychuk/mpt-lab"
+publish = false
+
+# Glue crate: compiles mpt-core to wasm and exposes a JSON-friendly API for
+# www/index.html. Kept separate from mpt-core so mpt-core itself stays
+# no_std + alloc with no serialization dependencies.
+#
+# Build with wasm-pack (bundled wasm-bindgen, matched to the Cargo.lock
+# version automatically):
+#
+#     wasm-pack build crates/mpt-wasm --target web --out-dir www/pkg --no-typescript
+#
+# Then serve crates/mpt-wasm/www/ over HTTP (not file://, browsers refuse to
+# fetch a wasm module from a file: URL) and open index.html.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mpt-core = { path = "../mpt-core" }
+rlp = "0.6"
+hex = { workspace = true, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "=0.2.100"
+console_error_panic_hook = "0.1"
+
+# wasm-pack's bundled wasm-opt mistransforms this wasm-bindgen version's
+# externref table (verified: the release build fails to instantiate —
+# `WebAssembly.Table.grow(): failed to grow table by 4` — while the
+# otherwise-identical --dev build, which skips wasm-opt, instantiates and
+# runs correctly). Keep rustc's own release optimizations, skip the
+# wasm-opt post-processing pass.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
