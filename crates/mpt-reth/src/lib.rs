@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use alloy_primitives::{Address, B256, keccak256};
-use reth_ethereum::provider::{StateProviderBox, StateProofProvider};
+use reth_ethereum::provider::{StateProofProvider, StateProviderBox};
 use reth_ethereum::trie::MultiProofTargets;
 
 use mpt_core::{Keccak256, hasher::keccak, partial::NodeProvider};

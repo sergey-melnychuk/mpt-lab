@@ -174,7 +174,10 @@ fn main() -> eyre::Result<()> {
                 Some(true) => {
                     sibling_stub += 1;
                     if sibling_stub <= 3 {
-                        println!("  example collapsing slot: {name} {}", hex::encode(slot.as_slice()));
+                        println!(
+                            "  example collapsing slot: {name} {}",
+                            hex::encode(slot.as_slice())
+                        );
                     }
                 }
                 Some(false) => sibling_inlined += 1,

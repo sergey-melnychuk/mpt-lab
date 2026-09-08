@@ -30,7 +30,9 @@ fn full_map(t: &mut Trie<K>, all_keys: &[&[u8]]) -> Map {
 #[test]
 fn map_provider_matches_full_trie_across_a_fixed_sweep() {
     const N: u16 = 300;
-    let keys: Vec<Vec<u8>> = (0..N).map(|i| keccak(&i.to_be_bytes())[..6].to_vec()).collect();
+    let keys: Vec<Vec<u8>> = (0..N)
+        .map(|i| keccak(&i.to_be_bytes())[..6].to_vec())
+        .collect();
     let pairs: Vec<(&[u8], Vec<u8>)> = keys
         .iter()
         .enumerate()
@@ -87,7 +89,11 @@ fn map_provider_matches_full_trie_across_a_fixed_sweep() {
         let v = vec![0xd0 + (i % 16) as u8; 40];
         partial.insert_with(&provider, &k, v.clone()).unwrap();
         reference.insert(&k, v).unwrap();
-        assert_eq!(partial.hash(), reference.hash(), "diverged inserting fresh key {i}");
+        assert_eq!(
+            partial.hash(),
+            reference.hash(),
+            "diverged inserting fresh key {i}"
+        );
     }
 }
 
@@ -154,7 +160,11 @@ fn recording_provider_captures_exactly_what_was_resolved() {
         1,
         "removing a needs exactly one extra node: b's leaf"
     );
-    assert_eq!(seen[0].0, [0, 1, 0, 2, 0, 3, 2], "resolved at the wrong path");
+    assert_eq!(
+        seen[0].0,
+        [0, 1, 0, 2, 0, 3, 2],
+        "resolved at the wrong path"
+    );
 }
 
 proptest! {

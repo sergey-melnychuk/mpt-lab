@@ -134,10 +134,16 @@ fn delete_collapse_resolves_a_fork_sibling() {
     let w = probe_witness(&mut full, a);
     let partial: Node<K> = build_partial(&w, &root);
     assert_eq!(node_root(&partial), root);
-    assert!(count_stubs(&partial) > 0, "vacuous: the sibling subtree wasn't stubbed");
+    assert!(
+        count_stubs(&partial) > 0,
+        "vacuous: the sibling subtree wasn't stubbed"
+    );
 
     let mut without = Trie::<K>::from_node(partial.clone());
-    assert!(matches!(without.remove(a), Err(TrieError::MissingNode { .. })));
+    assert!(matches!(
+        without.remove(a),
+        Err(TrieError::MissingNode { .. })
+    ));
 
     let mut with = Trie::<K>::from_node(partial);
     let provider = MapProvider::<K>(all_map);

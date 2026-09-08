@@ -41,6 +41,7 @@ use reth_ethereum::{
 use mpt_core::{
     Keccak256,
     hasher::keccak,
+    partial::RecordingProvider,
     trie::{Node, Trie, build_partial, node_root},
 };
 use mpt_reth::{AccountTrieProvider, RethProvider};
@@ -160,12 +161,24 @@ async fn main() -> eyre::Result<()> {
         all_events.extend(cache.events.clone());
     }
 
+    // EIP-7002 / EIP-7251: dequeue the withdrawal/consolidation request
+    // queues -- runs unconditionally at block end, same timing class as
+    // pre_block's EIP-4788/2935 writes, just at the other end of the block.
+    cache.reset();
+    yevm_core::exe::post_block(&mut cache, &db).await?;
+    all_events.extend(cache.events.clone());
+
     // 2. Extract the diff from the accumulated events.
     let mut touched_accounts: BTreeSet<Address> = BTreeSet::new();
     let mut touched_slots: BTreeMap<Address, BTreeSet<B256>> = BTreeMap::new();
     let mut destroyed: BTreeSet<Address> = BTreeSet::new();
 
-    for event in &all_events {
+    // `event.reverted` marks events undone by `Cache::revert_to` (e.g. a
+    // CREATE or SELFDESTRUCT inside a call frame that later reverted) --
+    // they stay in the stream for tracing, but their effects never happened,
+    // so they must not feed the diff (a reverted CREATE's account is gone
+    // from `cache.accounts` entirely, which is what surfaced this).
+    for event in all_events.iter().filter(|e| !e.reverted) {
         match &event.event {
             Event::Put(Target::Nonce { acc, .. }, _)
             | Event::Put(Target::Value { acc, .. }, _)
@@ -317,8 +330,7 @@ async fn main() -> eyre::Result<()> {
     }
     drop(proof_state);
 
-    let account_partial: Node<Keccak256> =
-        build_partial(&account_witness, &state_root_n_minus_1.0);
+    let account_partial: Node<Keccak256> = build_partial(&account_witness, &state_root_n_minus_1.0);
     eyre::ensure!(
         node_root(&account_partial) == state_root_n_minus_1.0,
         "account trie reconstruction failed"
@@ -332,7 +344,8 @@ async fn main() -> eyre::Result<()> {
     // behind the chain tip, `history_by_block_number` can be expensive to
     // reconstruct, so it must NOT be re-minted per touched account.
     let apply_state = std::rc::Rc::new(state_at(n)?);
-    let account_provider = AccountTrieProvider::new(apply_state.clone());
+    let account_provider = RecordingProvider::new(AccountTrieProvider::new(apply_state.clone()));
+    let mut stubs_resolved = 0usize;
 
     for addr in destroyed.iter() {
         let hashed = keccak256(addr);
@@ -349,7 +362,7 @@ async fn main() -> eyre::Result<()> {
         let trie = storage_tries
             .get_mut(addr)
             .ok_or_else(|| eyre::eyre!("missing storage trie for {addr}"))?;
-        let provider = RethProvider::new(apply_state.clone(), *addr);
+        let provider = RecordingProvider::new(RethProvider::new(apply_state.clone(), *addr));
         if std::env::var("DEBUG_ADDR")
             .map(|s| s.eq_ignore_ascii_case(&addr.to_string()))
             .unwrap_or(false)
@@ -376,8 +389,9 @@ async fn main() -> eyre::Result<()> {
                     .map_err(|e| eyre::eyre!("inserting {addr}/{slot}: {e:?}"))?;
             }
         }
+        let seen = provider.seen();
+        stubs_resolved += seen.len();
     }
-
 
     // DIAGNOSTIC: cross-check each computed leaf against the real post-block
     // (state resulting from block n, i.e. "before n+1") account info, to
@@ -494,6 +508,9 @@ async fn main() -> eyre::Result<()> {
     }
     println!("account-level mismatches found (capped at 20): {mismatches}\n");
 
+    stubs_resolved += account_provider.seen().len();
+    println!("{stubs_resolved} stubs resolved\n");
+
     // 6. Compare.
     let state_root_n = db
         .factory()
@@ -507,7 +524,11 @@ async fn main() -> eyre::Result<()> {
     println!("computed stateRoot: {got}");
     println!(
         "\n{}",
-        if state_root_n == got { "MATCH" } else { "MISMATCH" }
+        if state_root_n == got {
+            "MATCH"
+        } else {
+            "MISMATCH"
+        }
     );
 
     Ok(())

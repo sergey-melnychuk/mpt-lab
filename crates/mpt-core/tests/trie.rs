@@ -28,7 +28,12 @@ const CLASSIC: &[(&[u8], &[u8])] = &[
 fn classic_four_lookups() {
     let mut t = built(CLASSIC);
     for (k, v) in CLASSIC {
-        assert_eq!(t.get(k).unwrap(), Some(*v), "key={:?}", core::str::from_utf8(k));
+        assert_eq!(
+            t.get(k).unwrap(),
+            Some(*v),
+            "key={:?}",
+            core::str::from_utf8(k)
+        );
     }
     assert_eq!(t.get(b"d").unwrap(), None);
     assert_eq!(t.get(b"dogez").unwrap(), None);
@@ -105,11 +110,15 @@ fn diverge_at_first_nibble() {
 fn wide_forks() {
     let mut t = Trie::<K>::new();
     for i in 0u16..256 {
-        t.insert(&i.to_be_bytes(), i.to_string().into_bytes()).unwrap();
+        t.insert(&i.to_be_bytes(), i.to_string().into_bytes())
+            .unwrap();
     }
     t.root().debug_check();
     for i in 0u16..256 {
-        assert_eq!(t.get(&i.to_be_bytes()).unwrap(), Some(i.to_string().as_bytes()));
+        assert_eq!(
+            t.get(&i.to_be_bytes()).unwrap(),
+            Some(i.to_string().as_bytes())
+        );
     }
 }
 
@@ -143,7 +152,10 @@ fn delete_restores_the_exact_root() {
         let existed = t.get(extra).unwrap().is_some();
         t.insert(extra, b"temporary".to_vec()).unwrap();
         t.root().debug_check();
-        assert!(t.remove(extra).unwrap(), "remove({extra:?}) reported not-present");
+        assert!(
+            t.remove(extra).unwrap(),
+            "remove({extra:?}) reported not-present"
+        );
         t.root().debug_check();
 
         if existed {
@@ -309,7 +321,10 @@ fn removing_absent_keys_is_a_no_op() {
         b"doge\x00", // one nibble past a leaf
     ] {
         let mut t = built(CLASSIC);
-        assert!(!t.remove(absent).unwrap(), "remove({absent:?}) claimed success");
+        assert!(
+            !t.remove(absent).unwrap(),
+            "remove({absent:?}) claimed success"
+        );
         t.root().debug_check();
         assert_eq!(
             hex::encode(t.hash()),
@@ -331,7 +346,10 @@ fn remove_from_empty_trie() {
 fn double_remove() {
     let mut t = built(CLASSIC);
     assert!(t.remove(b"dog").unwrap());
-    assert!(!t.remove(b"dog").unwrap(), "second removal should report absent");
+    assert!(
+        !t.remove(b"dog").unwrap(),
+        "second removal should report absent"
+    );
     t.root().debug_check();
     assert_eq!(t.get(b"dog").unwrap(), None);
     assert_eq!(t.get(b"doge").unwrap(), Some(&b"coin"[..]));

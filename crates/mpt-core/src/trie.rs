@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::error::TrieError;
 use crate::hasher::keccak;
-use crate::partial::{NodeProvider, NoProvider};
+use crate::partial::{NoProvider, NodeProvider};
 use crate::path::{hex_prefix_decode, hex_prefix_encode};
 use crate::{
     Hasher,
@@ -638,9 +638,7 @@ fn remove_at<H: Hasher, P: NodeProvider<H>>(
 ) -> Result<(Node<H>, bool), TrieError<H>> {
     let path_so_far = &key_nibbles[..key_nibbles.len() - suffix_nibbles.len()];
     match node {
-        Node::Leaf { ref path, .. } if path.as_slice() == suffix_nibbles => {
-            Ok((Node::Null, true))
-        }
+        Node::Leaf { ref path, .. } if path.as_slice() == suffix_nibbles => Ok((Node::Null, true)),
         Node::Leaf { .. } => Ok((node, false)),
         Node::Skip { path, child } if suffix_nibbles.starts_with(&path) => {
             let plen = path.len();
@@ -693,8 +691,7 @@ fn remove_at<H: Hasher, P: NodeProvider<H>>(
             let Some(child) = children[i].take() else {
                 return Ok((Node::Fork { children, value }, false));
             };
-            let (child, removed) =
-                remove_at(*child, key_nibbles, &suffix_nibbles[1..], provider)?;
+            let (child, removed) = remove_at(*child, key_nibbles, &suffix_nibbles[1..], provider)?;
             children[i] = match child {
                 Node::Null => None,
                 c => Some(Box::new(c)),
