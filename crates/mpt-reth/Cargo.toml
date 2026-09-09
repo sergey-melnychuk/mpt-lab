@@ -29,12 +29,12 @@ hex = "0.4"
 eyre.workspace = true
 
 [dev-dependencies]
-# Path deps into the user's local yevm checkout — the git remote is a private
-# SSH URL, and yevm-reth pins the SAME reth v2.5.1 tag this crate already
-# does, against the SAME local datadir (see examples/block.rs).
-yevm-core = { path = "/home/work/Code/yevm/yevm-core" }
-yevm-reth = { path = "/home/work/Code/yevm/yevm-reth" }
-yevm-base = { path = "/home/work/Code/yevm/yevm-base" }
+# yevm pinned to a commit on its `reth` branch. yevm-reth pins the SAME reth
+# v2.5.1 tag this crate already does, against the SAME local datadir (see
+# examples/block.rs). Bump all three revs together — they are one workspace.
+yevm-core = { git = "https://github.com/sergey-melnychuk/yevm.git", rev = "3c8a7181a71e2ad963070ba62d533f600c67d6e8" }
+yevm-reth = { git = "https://github.com/sergey-melnychuk/yevm.git", rev = "3c8a7181a71e2ad963070ba62d533f600c67d6e8" }
+yevm-base = { git = "https://github.com/sergey-melnychuk/yevm.git", rev = "3c8a7181a71e2ad963070ba62d533f600c67d6e8" }
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
 alloy-rlp = "0.3"
 alloy-consensus = "2"
