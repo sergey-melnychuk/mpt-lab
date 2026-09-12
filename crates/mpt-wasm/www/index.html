@@ -156,6 +156,21 @@
   #mn-status, #mn-patch-status { min-height: 18px; font-size: 12.5px; color: var(--muted); margin-top: 6px; white-space: pre-wrap; }
   #mn-status.error, #mn-patch-status.error { color: #c0392b; }
   #mn-status.ok, #mn-patch-status.ok { color: var(--leaf); }
+  #mn-patch-status button { margin-top: 6px; }
+
+  /* Step-through panel for a storage patch that collapsed a Fork (story.js). */
+  .story {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--fork);
+    border-radius: 8px;
+    background: var(--fork-bg);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .story-note { white-space: pre-wrap; }
+  .story-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+  .story-step { color: var(--muted); font-size: 12px; font-family: var(--mono); margin-left: auto; }
   p.hint { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; }
   code { font-family: var(--mono); background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 
@@ -234,6 +249,14 @@
       </div>
     </div>
 
+    <div id="mn-story" class="story" hidden>
+      <div id="mn-story-note" class="story-note"></div>
+      <div class="story-row">
+        <button id="mn-story-next" type="button">Next &#9656;</button>
+        <button id="mn-story-finish" type="button">Skip to result</button>
+        <span id="mn-story-step" class="story-step"></span>
+      </div>
+    </div>
     <div id="mn-canvas-wrap" hidden><canvas id="mn-tree"></canvas></div>
 
     <div id="mn-kv-wrap" hidden>
@@ -246,10 +269,15 @@
         <code>eth_getProof</code> for a zero slot IS an exclusion proof,
         which is all an insert needs. Zeroing a slot usually works
         standalone too, UNLESS it collapses a Fork whose surviving sibling
-        isn't in this witness: that one case fails with the exact node
-        (hash + path) a public RPC cannot supply &mdash; see PTRIE.md
-        &sect;8 / PLAN.md &sect;1. That's a real gap in what
-        <code>eth_getProof</code> can express, not a bug in this page.
+        isn't in this witness (PTRIE.md &sect;8 / PLAN.md &sect;1):
+        <code>eth_getProof</code> cannot be asked for a node by path, so
+        this page searches for a probe slot whose keccak256 starts with
+        the missing node's path, fetches THAT slot's proof, which walks
+        through the node, and retries. About 16<sup>depth</sup> hashes:
+        instant for shallow storage, seconds around six nibbles, and not
+        a thing for the account trie &mdash; which is why mpt-reth asks
+        the database by path instead. A removal that collapsed a Fork
+        offers a step-by-step replay afterwards.
       </p>
       <div id="mn-patch-status"></div>
     </div>
@@ -280,12 +308,27 @@ import init, {
   rlp_trimmed_string_hex,
   rlp_decode_string_hex,
   rlp_account_hex,
+  probe_slot_for_path,
 } from "./pkg/mpt_wasm.js";
 import { drawTreeJson, placeholder } from "./tree-view.js";
+import { hexToNibbles, removalStory } from "./transitions.js";
+import { createStory } from "./story.js";
 
 await init();
 
 const $ = (id) => document.getElementById(id);
+
+// Replays a storage removal that collapsed a Fork, frame by frame, on the
+// storage-trie canvas (offered by a button in the patch status).
+const mnStory = createStory({
+  canvas: $("mn-tree"),
+  panel: $("mn-story"),
+  note: $("mn-story-note"),
+  step: $("mn-story-step"),
+  nextBtn: $("mn-story-next"),
+  finishBtn: $("mn-story-finish"),
+  onIdle: () => renderMainnetTree(),
+});
 
 async function rpcCall(url, method, params) {
   const res = await fetch(url, {
@@ -483,12 +526,18 @@ function mnModeButtons() {
   }
 }
 
-function renderMainnetTree() {
+function mnApplyModeVisibility() {
   $("mn-fetch-wrap").hidden = mnMode !== "fetch";
   $("mn-canvas-wrap").hidden = mnMode !== "account" && mnMode !== "storage";
   $("mn-kv-wrap").hidden = mnMode !== "kv";
   $("mn-legend").hidden = mnMode !== "account" && mnMode !== "storage";
   $("mn-tree-hint").hidden = mnMode !== "account" && mnMode !== "storage";
+  // The story panel belongs to the storage canvas only.
+  $("mn-story").hidden = !(mnMode === "storage" && mnStory.active());
+}
+
+function renderMainnetTree() {
+  mnApplyModeVisibility();
 
   if (mnMode === "kv") {
     renderStorageKv();
@@ -499,6 +548,8 @@ function renderMainnetTree() {
   const canvas = $("mn-tree");
   if (mnMode === "account" && mnAccountTrie) {
     drawTreeJson(canvas, mnAccountTrie.to_json(), renderMainnetTree);
+  } else if (mnMode === "storage" && mnStory.active()) {
+    mnStory.rerender();
   } else if (mnMode === "storage" && mnStorageTrie) {
     drawTreeJson(canvas, mnStorageTrie.to_json(), renderMainnetTree);
   } else if (mnMode === "storage") {
@@ -555,42 +606,29 @@ function renderStorageKv() {
     tr.appendChild(inputTd);
 
     const actionsTd = document.createElement("td");
+    const walkBtn = document.createElement("button");
+    walkBtn.className = "small";
+    walkBtn.type = "button";
+    walkBtn.textContent = "›";
+    walkBtn.title = "show the path to this slot in the storage trie";
+    walkBtn.setAttribute("aria-label", "show the path to this slot on the tree");
+    walkBtn.addEventListener("click", () => showSlotTraversal(slotHex));
     const updateBtn = document.createElement("button");
     updateBtn.className = "small";
     updateBtn.type = "button";
     updateBtn.textContent = "update";
-    updateBtn.addEventListener("click", () => {
-      try {
-        applyStoragePatch(slotHex, input.value.trim());
-      } catch (err) {
-        mnSetPatchStatus(describeMissingNode(err, "storage"), "error");
-      }
-      renderStorageKv();
-    });
+    updateBtn.addEventListener("click", () => runPatch(slotHex, input.value.trim()));
     const removeBtn = document.createElement("button");
     removeBtn.className = "small";
     removeBtn.type = "button";
     removeBtn.textContent = "remove";
-    removeBtn.addEventListener("click", () => {
-      try {
-        applyStoragePatch(slotHex, "0x0");
-      } catch (err) {
-        mnSetPatchStatus(describeMissingNode(err, "storage"), "error");
-      }
-      renderStorageKv();
-    });
+    removeBtn.addEventListener("click", () => runPatch(slotHex, "0x0"));
     const revertBtn = document.createElement("button");
     revertBtn.className = "small";
     revertBtn.type = "button";
     revertBtn.textContent = "revert";
-    revertBtn.addEventListener("click", () => {
-      try {
-        applyStoragePatch(slotHex, info.originalValue);
-      } catch (err) {
-        mnSetPatchStatus(describeMissingNode(err, "storage"), "error");
-      }
-      renderStorageKv();
-    });
+    revertBtn.addEventListener("click", () => runPatch(slotHex, info.originalValue));
+    actionsTd.appendChild(walkBtn);
     actionsTd.appendChild(updateBtn);
     actionsTd.appendChild(removeBtn);
     actionsTd.appendChild(revertBtn);
@@ -600,22 +638,131 @@ function renderStorageKv() {
   }
 }
 
-function describeMissingNode(e, which) {
+// The parsed `TrieError::MissingNode` a WasmProofTrie mutation threw, or
+// null for any other failure.
+function parseMissingNode(e) {
   try {
     const err = JSON.parse(e);
-    if (err.kind === "MissingNode") {
-      return (
-        `can't apply this patch: the ${which} trie needs a node this witness doesn't have\n` +
-        `  hash: ${err.hash}\n  path: /${err.path}\n` +
-        `This is PLAN.md §1's exact gap: eth_getProof can't be steered to fetch a ` +
-        `specific node by path, so a public RPC has no way to supply this one. A DB-level ` +
-        `path-directed multiproof (PTRIE.md §8, mpt-reth's RethProvider) can.`
-      );
-    }
-    return `error: ${JSON.stringify(err)}`;
+    return err.kind === "MissingNode" ? err : null;
   } catch {
-    return `error: ${e}`;
+    return null;
   }
+}
+
+function describeMissingNode(e, which) {
+  const err = parseMissingNode(e);
+  if (err) {
+    return (
+      `can't apply this patch: the ${which} trie needs a node this witness doesn't have\n` +
+      `  hash: ${err.hash}\n  path: /${err.path}\n` +
+      `This is PLAN.md §1's exact gap: eth_getProof can't be steered to fetch a specific node ` +
+      `by path. For a storage trie this page works around it with a probe slot whose hash shares ` +
+      `the path (see the hint above); when that is out of reach, or for the account trie, a ` +
+      `DB-level path-directed multiproof (PTRIE.md §8, mpt-reth's RethProvider) is the tool.`
+    );
+  }
+  try {
+    return `error: ${JSON.stringify(JSON.parse(e))}`;
+  } catch {
+    return `error: ${e.message ?? e}`;
+  }
+}
+
+// One button click on the KV table: apply, report, refresh.
+async function runPatch(slotHex, valueHex) {
+  try {
+    await applyStoragePatch(slotHex, valueHex);
+  } catch (err) {
+    mnSetPatchStatus(describeMissingNode(err, "storage"), "error");
+  }
+  renderStorageKv();
+}
+
+const PROBE_CHUNK = 1 << 18; // hashes per call into wasm, ~0.1s, then yield so the status line repaints
+const PROBE_BUDGET = 1 << 26; // ~67M hashes: several times the 16^6 ≈ 16.8M a six-nibble path expects
+
+// Get the node at `missing.path` into the storage witness through a public
+// RPC. `eth_getProof` hashes the slot for you, so it cannot be asked for a
+// path -- but any slot whose keccak256 starts with that path walks through
+// the node sitting there, and the (exclusion) proof for such a slot carries
+// it. So: brute-force a probe slot in wasm (`probe_slot_for_path`, in
+// chunks so the page stays responsive), fetch its proof, check the node
+// really is in it, merge. Throws when the path is too deep to reach this way.
+async function resolveMissingStorageNode(missing) {
+  if (!mnFetched) throw new Error("fetch a witness first");
+  const path = missing.path;
+  const expected = 16 ** path.length;
+  const say = (extra, kind) =>
+    mnSetPatchStatus(
+      `the witness lacks the node at /${path} (hash ${missing.hash.slice(0, 12)}…): the patched slot's proof never contained it.\n` +
+        `eth_getProof cannot be asked for a path, but any slot whose keccak256 starts with ${path} walks through that node, ` +
+        `so searching for one (about 16^${path.length} = ${expected.toLocaleString()} hashes)…\n${extra}`,
+      kind ?? "",
+    );
+  const t0 = performance.now();
+  let probe = null;
+  let done = 0;
+  say("");
+  for (let start = 0; start < PROBE_BUDGET && !probe; start += PROBE_CHUNK) {
+    const count = Math.min(PROBE_CHUNK, PROBE_BUDGET - start);
+    probe = probe_slot_for_path(path, start, count);
+    done = start + count;
+    if (!probe) {
+      say(`${done.toLocaleString()} hashes, ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+  if (!probe) {
+    throw new Error(
+      `no probe slot found within ${PROBE_BUDGET.toLocaleString()} hashes: path /${path} is too deep for this trick. ` +
+        `A DB-level path-directed multiproof (PTRIE.md §8, mpt-reth's RethProvider) is the tool for that.`,
+    );
+  }
+  say(`found probe slot ${probe} after ${done.toLocaleString()} hashes (${((performance.now() - t0) / 1000).toFixed(1)}s), fetching its proof…`);
+  const proof = await rpcCall(mnFetched.rpc, "eth_getProof", [mnFetched.address, [probe], mnFetched.blockHex]);
+  const nodes = proof.storageProof.flatMap((sp) => sp.proof);
+  if (!nodes.some((n) => keccak256_hex(n) === missing.hash)) {
+    throw new Error(`the probe slot's proof (${nodes.length} nodes) did not contain the node at /${path}; is the RPC serving block ${mnFetched.blockHex}?`);
+  }
+  // add_witness only ever replaces a Stub with bytes hashing to its
+  // reference, so the merge is sound whatever the RPC returned.
+  mnStorageTrie.add_witness(JSON.stringify(nodes));
+  say(`the probe slot's exclusion proof (${nodes.length} nodes) carries the node at /${path}, and its bytes hash to the reference the Fork held. Retrying the patch…`, "ok");
+}
+
+// The "›" on a KV row: switch to the storage tree and point the spine at
+// that slot's (hashed) key, root to leaf. Just the tree: no panel, no
+// animation. On a partial trie the spine may end at a Stub.
+function showSlotTraversal(slotHex) {
+  if (!mnStorageTrie) return;
+  mnStory.end(false);
+  mnMode = "storage";
+  mnModeButtons();
+  mnApplyModeVisibility();
+  drawTreeJson($("mn-tree"), mnStorageTrie.to_json(), renderMainnetTree, { focus: hexToNibbles(mnSlotTrieKey(slotHex)) });
+}
+
+// After a removal that collapsed a Fork: a button that replays it on the
+// storage canvas, frame by frame (transitions.js / story.js).
+function offerStory(beforeJson, afterJson, keyHex, lookups) {
+  const frames = removalStory(JSON.parse(beforeJson), JSON.parse(afterJson), hexToNibbles(keyHex));
+  if (!frames || frames.length < 4) return; // nothing collapsed: nothing worth stepping through
+  if (lookups > 0 && frames.length === 5) {
+    frames[2].note += " (fetched via probe slot)";
+  }
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "small";
+  btn.textContent = "replay the collapse step by step";
+  btn.addEventListener("click", () => {
+    mnMode = "storage";
+    mnModeButtons();
+    mnStory.start(frames);
+    mnApplyModeVisibility();
+  });
+  const el = $("mn-patch-status");
+  el.appendChild(document.createElement("br"));
+  el.appendChild(btn);
 }
 
 // eth_getProof echoes a storage slot back exactly as requested ("0x0" stays
@@ -629,26 +776,49 @@ function mnSlotTrieKey(slotHex) {
   return "0x" + keccak256_hex("0x" + padded);
 }
 
-// Shared by the KV table's per-row "apply"/"revert" buttons. Throws (a JSON
-// MissingNode string, or a plain Error) on failure -- callers decide how to
-// report it, since they know which UI it's happening in.
-function applyStoragePatch(slotHex, valueHex) {
+// Shared by the KV table's per-row buttons. Applies one patch, resolving
+// any node the witness lacks on the way: a mutation that hits one throws
+// `MissingNode` and leaves the trie untouched (WasmProofTrie is
+// transactional), `resolveMissingStorageNode` fetches the node, and the
+// patch is retried. One round is the norm -- a collapse needs exactly one
+// sibling -- with a few more allowed for an insert descending a stubbed
+// path. Throws (a JSON MissingNode string, or a plain Error) if it cannot.
+async function applyStoragePatch(slotHex, valueHex) {
   const key = mnSlotTrieKey(slotHex);
   const isZero = /^0x0*$/.test(valueHex || "0x0");
-  if (isZero) {
-    const removed = mnStorageTrie.remove(key);
-    mnSetPatchStatus(
-      removed
-        ? `removed ${slotHex} — new storageRoot ${mnStorageTrie.hash()}`
-        : `${slotHex} was already absent`,
-      "ok",
-    );
-  } else {
-    const rlpValue = "0x" + rlp_trimmed_string_hex(valueHex);
-    mnStorageTrie.insert(key, rlpValue);
-    mnSetPatchStatus(`set ${slotHex} = ${valueHex} — new storageRoot ${mnStorageTrie.hash()}`, "ok");
+  const before = mnStorageTrie.to_json();
+  mnStory.end(false);
+  let lookups = 0;
+  let removed = false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (isZero) {
+        removed = mnStorageTrie.remove(key);
+        mnSetPatchStatus(
+          removed
+            ? `removed ${slotHex} — new storageRoot ${mnStorageTrie.hash()}`
+            : `${slotHex} was already absent`,
+          "ok",
+        );
+      } else {
+        const rlpValue = "0x" + rlp_trimmed_string_hex(valueHex);
+        mnStorageTrie.insert(key, rlpValue);
+        mnSetPatchStatus(`set ${slotHex} = ${valueHex} — new storageRoot ${mnStorageTrie.hash()}`, "ok");
+      }
+      break;
+    } catch (e) {
+      const missing = parseMissingNode(e);
+      if (!missing || attempt >= 8) throw e;
+      await resolveMissingStorageNode(missing);
+      lookups++;
+    }
+  }
+  if (lookups > 0) {
+    mnSetPatchStatus(`${$("mn-patch-status").textContent}\n(${lookups} node${lookups === 1 ? "" : "s"} fetched by probe slot on the way)`, "ok");
   }
   propagateStorageRootToAccount();
+  if (mnMode === "storage") renderMainnetTree();
+  if (removed) offerStory(before, mnStorageTrie.to_json(), key, lookups);
 }
 
 /// Re-insert the account leaf with the storage trie's new root. Hypothetical:

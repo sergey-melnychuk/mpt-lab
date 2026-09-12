@@ -89,6 +89,45 @@ pub fn keccak256_hex(hex_in: &str) -> Result<String, JsValue> {
     Ok(hex::encode(keccak(&bytes)))
 }
 
+/// Find a storage slot whose keccak256 starts with the given nibble path
+/// (one hex digit per nibble, as `TrieError::MissingNode` reports it), by
+/// brute force over the counter range `[start, start + count)` — the slot
+/// is the counter as a 32-byte big-endian word. Returns the slot as 0x-hex,
+/// or `None` if the range held no match; call again with a later `start`.
+///
+/// This is how a browser gets the node a delete-collapse needs from a public
+/// RPC after all. `eth_getProof` hashes the slot for you, so it cannot be
+/// steered to a trie PATH (PTRIE.md §8.1) — but any slot whose hash shares
+/// the path's prefix walks through the node sitting there, and the
+/// (exclusion) proof for it carries that node. Expected cost is 16^len
+/// hashes: instant for a few nibbles, seconds around six, and hopeless at
+/// the account trie's depth — which is why mpt-reth asks the database by
+/// path instead. Bounded work per call so the caller can yield between
+/// chunks and report progress.
+#[wasm_bindgen]
+pub fn probe_slot_for_path(path_nibbles_hex: &str, start: u32, count: u32) -> Option<String> {
+    let want: Vec<u8> = path_nibbles_hex
+        .chars()
+        .filter_map(|c| c.to_digit(16).map(|d| d as u8))
+        .collect();
+    let mut slot = [0u8; 32];
+    for i in start..start.saturating_add(count) {
+        slot[28..].copy_from_slice(&i.to_be_bytes());
+        if nibble_prefix_matches(&keccak(&slot), &want) {
+            return Some(format!("0x{}", hex::encode(slot)));
+        }
+    }
+    None
+}
+
+fn nibble_prefix_matches(hash: &[u8; 32], want: &[u8]) -> bool {
+    want.iter().enumerate().all(|(i, &n)| {
+        let byte = hash[i / 2];
+        let nib = if i % 2 == 0 { byte >> 4 } else { byte & 0x0f };
+        nib == n
+    })
+}
+
 /// Decode hex, tolerating an odd digit count by left-padding a zero nibble —
 /// Ethereum JSON-RPC "quantity" encoding drops leading zeros and never pads
 /// to a whole byte (`nonce: "0x1"`, not `"0x01"`), unlike "data" fields
@@ -371,24 +410,45 @@ impl WasmProofTrie {
         WitnessProvider(self.witness.clone())
     }
 
+    /// Run `op` on a copy of the trie and keep the copy only if it succeeds.
+    ///
+    /// `Trie::insert_with`/`remove_with` move the root into the traversal
+    /// and write it back only on `Ok`, so on `Err(MissingNode)` the trie
+    /// they were called on is left EMPTY. The fetch-then-retry flow
+    /// index.html runs — hit a missing node, fetch it, `add_witness`, try
+    /// again — needs the original tree still standing after the failure.
+    /// Cloning per mutation is nothing at witness scale (tens of nodes),
+    /// which is why the fix lives here rather than in mpt-core's hot path.
+    fn transactional<T>(
+        &mut self,
+        op: impl FnOnce(
+            &mut Trie<Keccak256>,
+            &WitnessProvider<Keccak256>,
+        ) -> Result<T, TrieError<Keccak256>>,
+    ) -> Result<T, TrieError<Keccak256>> {
+        let provider = self.provider();
+        let mut copy = self.inner.clone();
+        let out = op(&mut copy, &provider)?;
+        self.inner = copy;
+        Ok(out)
+    }
+
     /// Insert `key` -> `value` (both hex). On `Err`, the JS side gets a JSON
-    /// string (see `describe_error`), not a Rust `Debug` dump.
+    /// string (see `describe_error`), not a Rust `Debug` dump, and the trie
+    /// is exactly as it was.
     pub fn insert(&mut self, key_hex: &str, value_hex: &str) -> Result<(), JsValue> {
         let key = parse_hex(key_hex)?;
         let value = parse_hex(value_hex)?;
-        let provider = self.provider();
-        self.inner
-            .insert_with(&provider, &key, value)
+        self.transactional(|t, p| t.insert_with(p, &key, value))
             .map_err(|e| describe_error(&e))
     }
 
     /// `SSTORE(slot, 0)` — Ethereum deletes a zeroed slot rather than storing
     /// it, so this is what applying a "set to zero" diff means (PLAN.md §1).
+    /// On `Err` the trie is exactly as it was.
     pub fn remove(&mut self, key_hex: &str) -> Result<bool, JsValue> {
         let key = parse_hex(key_hex)?;
-        let provider = self.provider();
-        self.inner
-            .remove_with(&provider, &key)
+        self.transactional(|t, p| t.remove_with(p, &key))
             .map_err(|e| describe_error(&e))
     }
 
@@ -417,6 +477,57 @@ impl WasmProofTrie {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_slot_hashes_to_the_requested_path() {
+        // Three nibbles: ~4096 tries expected, so a 64k budget is ample.
+        let slot = probe_slot_for_path("1a2", 0, 1 << 16).expect("a match within budget");
+        let bytes = parse_hex_bytes(&slot).unwrap();
+        assert_eq!(bytes.len(), 32);
+        let h = keccak(&bytes);
+        assert_eq!(h[0], 0x1a);
+        assert_eq!(h[1] >> 4, 0x2);
+        // Resumable: a later window never hands back a slot from before `start`.
+        let later = probe_slot_for_path("1a2", 1 << 16, 1 << 16);
+        assert_ne!(later.as_deref(), Some(slot.as_str()));
+    }
+
+    /// The fetch-then-retry flow depends on this: a mutation that fails with
+    /// `MissingNode` must leave the trie exactly as it was, not empty.
+    #[test]
+    fn failed_mutation_leaves_the_trie_standing() {
+        let a: &[u8] = &[0x01, 0x02, 0x03, 0x10];
+        let b: &[u8] = &[0x01, 0x02, 0x03, 0x20];
+        let mut full = Trie::<Keccak256>::new();
+        full.insert(a, vec![0xaa; 40]).unwrap();
+        full.insert(b, vec![0xbb; 40]).unwrap();
+        let root = full.hash();
+        // b's leaf is hashed (40-byte value), so a's own proof leaves it a
+        // Stub -- exactly the sibling a collapse needs and cannot have.
+        let witness: BTreeMap<[u8; 32], Vec<u8>> =
+            full.prove(a).into_iter().map(|n| (keccak(&n), n)).collect();
+        let mut t = WasmProofTrie {
+            inner: Trie::from_node(build_partial::<Keccak256>(&witness, &root)),
+            witness,
+        };
+        assert!(count_stubs(t.inner.root()) > 0, "vacuous: no stub to hit");
+
+        let err = t.transactional(|tr, p| tr.remove_with(p, a)).unwrap_err();
+        assert!(matches!(err, TrieError::MissingNode { .. }));
+        assert_eq!(
+            node_root(t.inner.root()),
+            root,
+            "trie must be untouched after a failed remove"
+        );
+
+        // Once the witness carries the sibling, the very same call succeeds.
+        t.witness
+            .extend(full.prove(b).into_iter().map(|n| (keccak(&n), n)));
+        assert!(t.transactional(|tr, p| tr.remove_with(p, a)).unwrap());
+        let mut reference = full.clone();
+        reference.remove(a).unwrap();
+        assert_eq!(t.inner.hash(), reference.hash());
+    }
 
     #[test]
     fn parse_hex_bytes_strips_prefix_and_pads_odd_length() {

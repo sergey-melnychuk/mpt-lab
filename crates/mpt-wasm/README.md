@@ -12,16 +12,30 @@ wasm dependencies of its own.
   endpoint via `eth_getProof`, reconstructs the account/storage tries from
   that proof witness, and independently re-derives both roots to verify the
   response wasn't tampered with or incomplete. Supports patching storage
-  values in place, and shows exactly which node a public RPC can't supply
-  when a patch needs one it didn't send.
+  values in place. When a patch needs a node the witness lacks — a removal
+  that collapses a Fork onto a sibling the proof never carried — the page
+  fetches it anyway: `eth_getProof` can't be asked for a node by path, but
+  a probe slot whose keccak256 shares the node's nibble prefix walks
+  through it, so the page brute-forces one in wasm (`probe_slot_for_path`),
+  fetches that slot's proof, and retries. Feasible at storage-trie depths,
+  not the account trie's.
 - **[`www/build.html`](www/build.html) — MPT Builder.** Builds a trie from
   scratch out of a table of hex key/value pairs you type in yourself, with a
   toggle for whether keys get keccak256-hashed first (Ethereum's "secure
   trie" transform) or inserted as raw bytes — a way to build intuition for
-  `Fork`/`Skip`/`Leaf` shape without needing real chain data.
+  `Fork`/`Skip`/`Leaf` shape without needing real chain data. A zero value
+  removes its key, as `SSTORE(slot, 0)` does.
 
 Both pages render the trie as an interactive canvas diagram, via the shared
-renderer in [`www/tree-view.js`](www/tree-view.js).
+renderer in [`www/tree-view.js`](www/tree-view.js). A change to a single key
+animates along that key's path: an insert or update slides boxes and flashes
+the re-hashed ones, and a removal that collapses a Fork is replayed step by
+step ([`www/transitions.js`](www/transitions.js) builds the in-between
+frames from the before/after snapshots, [`www/story.js`](www/story.js)
+drives the panel), pausing on the surviving sibling to show whether its
+bytes came inlined with the Fork or have to be looked up — the case
+PLAN.md §1 is about. The `›` button on a row points the spine at that key,
+root to leaf.
 
 ## Build & run
 

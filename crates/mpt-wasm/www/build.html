@@ -140,6 +140,13 @@
     font-size: 16px;
     line-height: 1;
   }
+  .row-actions { display: flex; align-items: center; gap: 4px; }
+  /* A row whose removal is showing its first step: still here, on its way out. */
+  tr.pending-removal { opacity: 0.45; }
+  tr.pending-removal .kv-input { text-decoration: line-through; }
+  /* The row a Leaf click (or a row's ›) points at. */
+  tr.highlight td { background: var(--skip-bg); }
+  tr.highlight .kv-input { border-color: var(--skip); }
   .button-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
   .check-btn {
     display: inline-flex;
@@ -176,6 +183,20 @@
   #bt-status { min-height: 18px; font-size: 12.5px; color: var(--muted); margin-top: 10px; white-space: pre-wrap; }
   #bt-status.error { color: #c0392b; }
   #bt-status.ok { color: var(--leaf); }
+
+  /* Step-through panel for a change to one key (story.js). */
+  .story {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--fork);
+    border-radius: 8px;
+    background: var(--fork-bg);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .story-note { white-space: pre-wrap; }
+  .story-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+  .story-step { color: var(--muted); font-size: 12px; font-family: var(--mono); margin-left: auto; }
   code { font-family: var(--mono); background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 
   .info-btn {
@@ -249,9 +270,12 @@
       <button type="button" class="rand-btn" data-n="20">+20</button>
       <button type="button" class="rand-btn" data-n="100">+100</button>
       <label class="check-btn"><input type="checkbox" id="bt-hash" checked />Hash</label>
+      <label class="check-btn"><input type="checkbox" id="bt-trace" checked />Trace</label>
       <span class="info-btn tip-below" tabindex="0">i<span class="tooltip">
         Each value is RLP-encoded (leading zero bytes trimmed) before
-        insertion, like a real storage slot. With <b>Hash</b> checked, each
+        insertion, like a real storage slot; a zero value instead
+        <b>removes</b> the key, as <code>SSTORE(slot, 0)</code> does &mdash;
+        Ethereum has no slot holding zero. With <b>Hash</b> checked, each
         key is also keccak256-hashed first &mdash; the "secure trie"
         transform Ethereum's real state and storage tries apply, so the
         shape you get matches what <code>eth_getProof</code> would return
@@ -259,6 +283,10 @@
         keys sharing a hex prefix then share trie structure too, which makes
         Skip/Fork shapes easier to see than a keccak256 hash's uniform
         sprawl. Both inputs must be hex (<code>0x</code>-prefixed or not).
+        With <b>Trace</b> checked, a change to one key is animated and a
+        removal steps through the collapse it causes; unchecked, the tree
+        simply updates. Clicking a Leaf on the tree, or a row's
+        <code>&rsaquo;</code>, points the one at the other.
       </span></span>
       <span id="bt-stats" class="stats"></span>
     </div>
@@ -274,6 +302,14 @@
   <div class="panel" id="bt-tree-panel">
     <h2>Trie</h2>
     <div id="bt-root-hash">root: &mdash;</div>
+    <div id="bt-story" class="story" hidden>
+      <div id="bt-story-note" class="story-note"></div>
+      <div class="story-row">
+        <button id="bt-story-next" type="button">Next &#9656;</button>
+        <button id="bt-story-finish" type="button">Skip to result</button>
+        <span id="bt-story-step" class="story-step"></span>
+      </div>
+    </div>
     <div id="bt-canvas-wrap"><canvas id="bt-tree"></canvas></div>
     <div class="legend">
       <span><i class="swatch" style="background:var(--leaf)"></i>Leaf</span>
@@ -292,18 +328,57 @@
 
 <script type="module">
 import init, { WasmTrie, keccak256_hex, rlp_trimmed_string_hex } from "./pkg/mpt_wasm.js";
-import { drawTreeJson } from "./tree-view.js";
+import { drawTreeJson, onLeafClick } from "./tree-view.js";
+import { hexToNibbles, removalStory, describeChange } from "./transitions.js";
+import { createStory } from "./story.js";
 
 await init();
 
 const $ = (id) => document.getElementById(id);
 
 let btTrie = null;
+// The tree as last shown, and the (trie key -> stored value) map it was
+// built from, so the next rebuild can tell WHICH key changed and animate
+// just that -- see showChange().
+let btPrevJson = null;
+let btPrevMap = new Map();
+// A row whose "×" was clicked but which is still in the table: the story's
+// first step only marks the leaf; the row goes when the story moves on.
+let btPending = null; // { row, tr }
+// Set while a rebuild must leave the canvas alone (a story is showing it).
+let btSilent = false;
+
+const btStory = createStory({
+  canvas: $("bt-tree"),
+  panel: $("bt-story"),
+  note: $("bt-story-note"),
+  step: $("bt-story-step"),
+  nextBtn: $("bt-story-next"),
+  finishBtn: $("bt-story-finish"),
+  onIdle: () => renderTree(),
+});
+
+// Clicking a Leaf on the tree points at the row that put it there.
+onLeafClick($("bt-tree"), (nibbles) => {
+  const row = rowForKey(nibbles);
+  if (row) highlightRow(row);
+});
+
+// Trace: animate single-key changes and step through removals. Off, the
+// tree simply updates.
+const traceOn = () => $("bt-trace").checked;
 let btRows = [
   { key: "0x01", value: "0x2a" },
   { key: "0x02", value: "0x539" },
   { key: "0xff", value: "0x01" },
 ];
+
+// A zero value in any hex spelling: "0x0", "0x00...", "0", "00", or a bare
+// "0x". The same test index.html's `applyStoragePatch` applies to a storage
+// patch, widened to accept unprefixed hex like the rest of this page does.
+function isZeroHex(hex) {
+  return /^(0x)?0*$/i.test(hex);
+}
 
 function setStatus(msg, kind) {
   const el = $("bt-status");
@@ -348,50 +423,182 @@ function renderRows() {
     tr.appendChild(valueTd);
 
     const actionTd = document.createElement("td");
+    // `.square-btn` is display:flex, i.e. block-level, so two of them in a
+    // cell would stack; the wrapper lays them out in one row.
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const walkBtn = document.createElement("button");
+    walkBtn.type = "button";
+    walkBtn.className = "square-btn";
+    walkBtn.textContent = "›";
+    walkBtn.title = "show the path to this key";
+    walkBtn.setAttribute("aria-label", "show the path to this key on the tree");
+    walkBtn.addEventListener("click", () => showTraversal(row));
     const removeBtn = document.createElement("button");
     removeBtn.type = "button";
     removeBtn.className = "square-btn";
     removeBtn.textContent = "×";
     removeBtn.setAttribute("aria-label", "remove this row");
-    removeBtn.addEventListener("click", () => {
-      btRows.splice(i, 1);
-      renderRows();
-      rebuild();
-    });
-    actionTd.appendChild(removeBtn);
+    removeBtn.addEventListener("click", () => startRemoval(row, tr));
+    actions.append(removeBtn, walkBtn);
+    actionTd.appendChild(actions);
     tr.appendChild(actionTd);
+    if (btPending?.row === row) markPendingRow(tr);
 
     body.appendChild(tr);
   });
 }
 
-// Rebuilds the whole trie from `btRows` on every edit rather than patching
-// incrementally -- the table IS the source of truth, so re-deriving from it
-// is simpler than tracking insert/remove diffs, and cheap enough at demo
-// scale to run on every keystroke.
-function rebuild() {
-  if (btTrie) btTrie.free();
-  btTrie = new WasmTrie();
-
+// Build a WasmTrie from `rows` (a zero value removes its key). Returns the
+// trie, the (trie key -> stored value) map it holds -- keys as nibble hex,
+// so raw and hashed keys compare alike -- and any per-row errors.
+function buildTrie(rows) {
+  const trie = new WasmTrie();
   const hashKeys = $("bt-hash").checked;
+  const map = new Map();
   const errors = [];
-  for (const row of btRows) {
+  for (const row of rows) {
     const keyHex = row.key.trim();
     const valueHex = row.value.trim();
     if (!keyHex || !valueHex) continue;
     try {
       const trieKey = hashKeys ? "0x" + keccak256_hex(keyHex) : keyHex;
+      const nk = hexToNibbles(trieKey).map((n) => n.toString(16)).join("");
+      if (isZeroHex(valueHex)) {
+        // SSTORE(slot, 0) deletes the slot: Ethereum has no "present with
+        // value zero", so a zero row removes the key rather than storing an
+        // empty-string leaf. Rows apply in order, so zeroing a key an
+        // earlier row inserted takes it back out -- through the real
+        // remove/collapse path, not by skipping the insert.
+        trie.remove(trieKey);
+        map.delete(nk);
+        continue;
+      }
       const rlpValue = "0x" + rlp_trimmed_string_hex(valueHex);
-      btTrie.insert(trieKey, rlpValue);
+      trie.insert(trieKey, rlpValue);
+      map.set(nk, rlpValue);
     } catch (e) {
       errors.push(`key ${keyHex}: ${e}`);
     }
   }
+  return { trie, map, errors };
+}
 
-  setStatus(errors.join("\n"), errors.length ? "error" : "");
-
+// Rebuilds the whole trie from `btRows` on every edit rather than patching
+// incrementally -- the table IS the source of truth, so re-deriving from it
+// is simpler than tracking insert/remove diffs, and cheap enough at demo
+// scale to run on every keystroke. A removal still waiting on its first
+// story step is committed first: any other edit means the user moved on.
+function rebuild() {
+  if (btPending) commitPending();
+  if (btTrie) btTrie.free();
+  const built = buildTrie(btRows);
+  btTrie = built.trie;
+  setStatus(built.errors.join("\n"), built.errors.length ? "error" : "");
   $("bt-root-hash").textContent = "root: 0x" + btTrie.hash();
-  renderTree();
+  const json = btTrie.to_json();
+  updateStats(json);
+  showChange(built.map, json);
+  btPrevMap = built.map;
+  btPrevJson = json;
+}
+
+// How to get from the tree last shown to `json`. Exactly one key changed:
+// animate along that key's path -- and if it was a removal, step through
+// the collapse it may cause (transitions.js), pausing on the surviving
+// sibling, which is where a partial trie would need a lookup. Anything
+// else (several keys, the Hash toggle, Clear, the first build): just draw.
+function showChange(newMap, json) {
+  if (btSilent) return;
+  const changed = [];
+  for (const k of new Set([...btPrevMap.keys(), ...newMap.keys()])) {
+    if (btPrevMap.get(k) !== newMap.get(k)) changed.push(k);
+  }
+  if (changed.length === 0 && btPrevJson !== null) return; // e.g. typing "0" into an already-empty value
+  btStory.end(false);
+  if (btPrevJson === null || changed.length !== 1 || !traceOn()) {
+    renderTree();
+    return;
+  }
+
+  const k = changed[0];
+  const key = [...k].map((c) => parseInt(c, 16));
+  const before = JSON.parse(btPrevJson);
+  const after = JSON.parse(json);
+  if (!newMap.has(k)) {
+    const frames = removalStory(before, after, key);
+    if (frames) {
+      btStory.start(frames);
+      return;
+    }
+  }
+  btStory.note(describeChange(before, after, key, btPrevMap.has(k) ? "update" : "insert"));
+  drawTreeJson($("bt-tree"), json, renderTree, { from: btPrevJson, focus: key });
+}
+
+// The "×" on a row. When the trie holds the row's key this is a two-step
+// removal: the story's first step only marks the leaf that is about to go,
+// the row stays in the table greyed out, and only when the story moves past
+// that step is the row taken out and the trie rebuilt. Otherwise (an empty
+// or zeroed row, nothing in the trie to show) the row simply goes.
+function startRemoval(row, tr) {
+  if (btPending) commitPending();
+  if (!traceOn()) {
+    removeRowNow(row);
+    return;
+  }
+  let frames = null;
+  const keyHex = row.key.trim();
+  const valueHex = row.value.trim();
+  if (keyHex && valueHex && !isZeroHex(valueHex)) {
+    try {
+      const trieKey = $("bt-hash").checked ? "0x" + keccak256_hex(keyHex) : keyHex;
+      const scratch = buildTrie(btRows.filter((r) => r !== row));
+      const after = JSON.parse(scratch.trie.to_json());
+      scratch.trie.free();
+      frames = removalStory(JSON.parse(btTrie.to_json()), after, hexToNibbles(trieKey));
+    } catch {
+      frames = null;
+    }
+  }
+  if (!frames) {
+    removeRowNow(row);
+    return;
+  }
+  btPending = { row, tr };
+  markPendingRow(tr);
+  frames[0].onLeave = () => commitPending();
+  btStory.start(frames);
+}
+
+function markPendingRow(tr) {
+  tr.classList.add("pending-removal");
+  for (const input of tr.querySelectorAll("input")) input.disabled = true;
+  btPending.tr = tr;
+}
+
+function removeRowNow(row) {
+  const idx = btRows.indexOf(row);
+  if (idx >= 0) btRows.splice(idx, 1);
+  renderRows();
+  rebuild();
+}
+
+// Take the pending row out of the table and the trie without touching the
+// canvas: the story is showing what happens to it.
+function commitPending() {
+  if (!btPending) return;
+  const { row, tr } = btPending;
+  btPending = null;
+  const idx = btRows.indexOf(row);
+  if (idx >= 0) btRows.splice(idx, 1);
+  tr.remove();
+  btSilent = true;
+  try {
+    rebuild();
+  } finally {
+    btSilent = false;
+  }
 }
 
 // Depth = length of the longest root-to-leaf chain of NodeView boxes (same
@@ -407,12 +614,72 @@ function treeDepth(view) {
   return 1;
 }
 
-function renderTree() {
-  const canvas = $("bt-tree");
-  const json = btTrie.to_json();
-  drawTreeJson(canvas, json, renderTree);
+// The "›" on a row: point the spine at that key, root to leaf, using the
+// key exactly as the trie sees it -- hashed if the toggle is on. Just the
+// tree: no panel, no animation.
+function showTraversal(row) {
+  const keyHex = row.key.trim();
+  if (!keyHex) return;
+  let trieKey;
+  try {
+    trieKey = $("bt-hash").checked ? "0x" + keccak256_hex(keyHex) : keyHex;
+  } catch (e) {
+    setStatus(`key ${keyHex}: ${e}`, "error");
+    return;
+  }
+  btStory.end(false);
+  drawTreeJson($("bt-tree"), btTrie.to_json(), renderTree, { focus: hexToNibbles(trieKey) });
+  highlightRow(row);
+}
 
-  const n = btRows.filter((r) => r.key.trim() && r.value.trim()).length;
+// The nibble-hex trie key a row maps to (hashed if the toggle is on), or
+// null for a row with no usable key.
+function rowTrieKey(row) {
+  const keyHex = row.key.trim();
+  if (!keyHex) return null;
+  try {
+    const trieKey = $("bt-hash").checked ? "0x" + keccak256_hex(keyHex) : keyHex;
+    return hexToNibbles(trieKey).map((n) => n.toString(16)).join("");
+  } catch {
+    return null;
+  }
+}
+
+// The row that put `nibbles` (a full key) into the trie: the LAST row with
+// that key and a non-zero value, since rows apply in order.
+function rowForKey(nibbles) {
+  const nk = nibbles.map((n) => n.toString(16)).join("");
+  let found = null;
+  for (const row of btRows) {
+    const v = row.value.trim();
+    if (v && !isZeroHex(v) && rowTrieKey(row) === nk) found = row;
+  }
+  return found;
+}
+
+// Point at a row: mark it, scroll it into view, focus its key field.
+function highlightRow(row) {
+  const body = $("bt-body");
+  const tr = body.children[btRows.indexOf(row)];
+  if (!tr) return;
+  for (const other of body.querySelectorAll("tr.highlight")) other.classList.remove("highlight");
+  tr.classList.add("highlight");
+  tr.scrollIntoView({ block: "nearest" });
+  tr.querySelector("input")?.focus({ preventScroll: true });
+}
+
+function renderTree() {
+  if (btStory.active()) {
+    // A strip click mid-story redraws the current frame, not the real tree.
+    btStory.rerender();
+    return;
+  }
+  drawTreeJson($("bt-tree"), btTrie.to_json(), renderTree);
+}
+
+function updateStats(json) {
+  // Zeroed rows are removals, so they are not keys the trie holds.
+  const n = btRows.filter((r) => r.key.trim() && r.value.trim() && !isZeroHex(r.value.trim())).length;
   $("bt-stats").textContent = `${n} key${n === 1 ? "" : "s"} · depth ${treeDepth(JSON.parse(json))}`;
 }
 
@@ -453,6 +720,15 @@ $("bt-clear").addEventListener("click", () => {
 });
 
 $("bt-hash").addEventListener("change", rebuild);
+
+// Turning Trace off mid-story: finish whatever was pending and show the
+// real tree. Turning it on changes nothing until the next edit.
+$("bt-trace").addEventListener("change", () => {
+  if (traceOn()) return;
+  if (btPending) commitPending();
+  btStory.end(false);
+  renderTree();
+});
 
 renderRows();
 rebuild();
