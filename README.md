@@ -1,5 +1,7 @@
 # mpt-lab
 
+**[Live Demo](https://sergey-melnychuk.github.io/mpt-lab)** ([trie builder](https://sergey-melnychuk.github.io/mpt-lab/build.html))
+
 A Merkle Patricia Trie in Rust, written from scratch to learn how Ethereum's
 state commitment actually works.
 

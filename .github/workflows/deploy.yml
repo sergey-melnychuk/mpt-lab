@@ -1,0 +1,65 @@
+name: Deploy WASM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM
+        run: wasm-pack build crates/mpt-wasm --release --target web --out-dir www/pkg --no-typescript
+
+      - name: Assemble deploy directory
+        run: |
+          mkdir -p public/pkg
+          cp crates/mpt-wasm/www/index.html public/
+          cp crates/mpt-wasm/www/build.html public/
+          cp crates/mpt-wasm/www/story.js public/
+          cp crates/mpt-wasm/www/transitions.js public/
+          cp crates/mpt-wasm/www/tree-view.js public/
+          cp crates/mpt-wasm/www/pkg/mpt_wasm.js public/pkg/
+          cp crates/mpt-wasm/www/pkg/mpt_wasm_bg.wasm public/pkg/
+
+      - uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
