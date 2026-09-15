@@ -1,9 +1,10 @@
 //! Execute a real mainnet block N against block N-1's state with `yevm`
 //! (the user's own EVM, pulled in as a dev-dependency), apply the resulting
-//! diff — plus withdrawals, which yevm does not process (verified: zero
-//! hits grepping its source for "withdrawal") — onto a **partial** trie
-//! built for block N-1, and check the recomputed root against block N's
-//! real header `stateRoot`.
+//! diff — `yevm_core::exe::post_block` now credits EIP-4895 validator
+//! withdrawals and dequeues the EIP-7002/7251 request queues itself, so no
+//! manual patching is needed here — onto a **partial** trie built for
+//! block N-1, and check the recomputed root against block N's real header
+//! `stateRoot`.
 //!
 //! Both execution (`yevm-reth::RethDb`) and the trie-proof reads
 //! (`mpt-reth`'s own `RethProvider`/`AccountTrieProvider`) share the SAME
@@ -31,10 +32,7 @@ use alloy_consensus::constants::KECCAK_EMPTY;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
 use reth_ethereum::{
-    provider::{
-        BlockReader, HeaderProvider, StateProofProvider, StateProvider, StateProviderBox,
-        TransactionVariant,
-    },
+    provider::{HeaderProvider, StateProofProvider, StateProvider, StateProviderBox},
     trie::{EMPTY_ROOT_HASH, MultiProofTargets, TrieAccount},
 };
 
@@ -50,8 +48,8 @@ use yevm_base::{Acc, Int};
 use yevm_core::{
     cache::Cache,
     chain::Chain,
-    exe::{Executor, pre_block},
-    state::{Account, State as _},
+    exe::{Executor, post_block, pre_block},
+    state::State as _,
     trace::{Event, Target, Trace},
 };
 use yevm_reth::RethDb;
@@ -66,10 +64,6 @@ fn addr_to_acc(addr: Address) -> Acc {
 
 fn int_to_u256(v: &Int) -> U256 {
     U256::from_be_slice(v.as_ref())
-}
-
-fn u256_to_int(v: U256) -> Int {
-    Int::from(v.to_be_bytes::<32>().as_slice())
 }
 
 /// A real node (reth + lighthouse) is live-syncing against this same
@@ -110,7 +104,7 @@ async fn main() -> eyre::Result<()> {
     // "header not found" immediately after being reported as tip) -- the
     // live node's static-file/MDBX views aren't perfectly atomic with each
     // other at the bleeding edge.
-    let n = n_arg.unwrap_or(tip.saturating_sub(1));
+    let n = n_arg.unwrap_or(tip);
     println!("datadir tip: {tip}, replaying block {n}\n");
 
     db.pin(n)?;
@@ -152,20 +146,20 @@ async fn main() -> eyre::Result<()> {
     // the loop's first `cache.reset()`, which would otherwise silently
     // wipe them -- they never make it into `all_events` otherwise.
     let mut all_events: Vec<Trace> = cache.events.clone();
-    for tx in block.txs {
+    for tx in &block.txs {
         cache.reset(); // clears cache.events, NOT cache.accounts -- snapshot first
-        let (t, call) = (tx.tx.clone(), tx.call.into());
+        let (t, call) = (tx.tx.clone(), tx.call.clone().into());
         Executor::new(call)
             .run(t, head.clone(), &mut cache, &db)
             .await?;
         all_events.extend(cache.events.clone());
     }
 
-    // EIP-7002 / EIP-7251: dequeue the withdrawal/consolidation request
-    // queues -- runs unconditionally at block end, same timing class as
-    // pre_block's EIP-4788/2935 writes, just at the other end of the block.
+    // EIP-4895 withdrawals + EIP-7002/7251 request-queue dequeue -- runs
+    // unconditionally at block end, same timing class as pre_block's
+    // EIP-4788/2935 writes, just at the other end of the block.
     cache.reset();
-    yevm_core::exe::post_block(&mut cache, &db).await?;
+    post_block(&block, &mut cache, &db).await?;
     all_events.extend(cache.events.clone());
 
     // 2. Extract the diff from the accumulated events.
@@ -209,35 +203,7 @@ async fn main() -> eyre::Result<()> {
         }
     }
 
-    // 3. Withdrawals: the confirmed yevm gap. Read straight from the block
-    // body (via the shared factory, no RPC), Gwei -> Wei, credit directly.
-    let withdrawals = {
-        let provider = db.factory().provider()?;
-        let recovered = provider
-            .sealed_block_with_senders(n.into(), TransactionVariant::WithHash)?
-            .ok_or_else(|| eyre::eyre!("block {n} not found"))?;
-        recovered.body().withdrawals.clone().unwrap_or_default()
-    };
-    println!("withdrawals: {}", withdrawals.len());
-
-    for w in withdrawals.iter() {
-        let addr = w.address;
-        let amount_wei = U256::from(w.amount) * U256::from(1_000_000_000u64);
-        let acc = addr_to_acc(addr);
-        let current = match cache.account(&acc) {
-            Some(a) => a.clone(),
-            None => db.acc(&acc).await?,
-        };
-        let new_balance = int_to_u256(&current.value) + amount_wei;
-        cache.insert_account(
-            acc,
-            Account {
-                value: u256_to_int(new_balance),
-                ..current
-            },
-        );
-        touched_accounts.insert(addr);
-    }
+    println!("withdrawals: {}", block.withdrawals.len());
 
     println!(
         "touched accounts: {}, touched slots: {}, destroyed: {} {:?}\n",
@@ -247,7 +213,7 @@ async fn main() -> eyre::Result<()> {
         destroyed
     );
 
-    // 4. Bootstrap the partial account trie for block (n-1) from ordinary
+    // 3. Bootstrap the partial account trie for block (n-1) from ordinary
     // inclusion proofs, batched into ONE `multiproof()` call for every
     // touched account instead of one `state.proof()` call per account.
     // Measured on a real 552-account block: per-account `proof()` calls cost
@@ -337,7 +303,7 @@ async fn main() -> eyre::Result<()> {
     );
     let mut account_trie = Trie::<Keccak256>::from_node(account_partial);
 
-    // 5. Apply the diff, driving every mutation through the on-demand
+    // 4. Apply the diff, driving every mutation through the on-demand
     // providers uniformly (Phase B's collapse-resolution kicks in
     // automatically if a removal needs a node the initial proof didn't
     // carry). One shared `StateProviderBox`, minted once -- for a block far
@@ -511,7 +477,7 @@ async fn main() -> eyre::Result<()> {
     stubs_resolved += account_provider.seen().len();
     println!("{stubs_resolved} stubs resolved\n");
 
-    // 6. Compare.
+    // 5. Compare.
     let state_root_n = db
         .factory()
         .provider()?

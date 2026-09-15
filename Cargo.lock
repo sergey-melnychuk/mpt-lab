@@ -11727,7 +11727,7 @@ checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 [[package]]
 name = "yevm-base"
 version = "0.1.0"
-source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=3c8a7181a71e2ad963070ba62d533f600c67d6e8#3c8a7181a71e2ad963070ba62d533f600c67d6e8"
+source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=31d46cc9d191206ab3ed45d6879a13e3ef5656fd#31d46cc9d191206ab3ed45d6879a13e3ef5656fd"
 dependencies = [
  "hex",
  "ruint",
@@ -11737,7 +11737,7 @@ dependencies = [
 [[package]]
 name = "yevm-core"
 version = "0.1.0"
-source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=3c8a7181a71e2ad963070ba62d533f600c67d6e8#3c8a7181a71e2ad963070ba62d533f600c67d6e8"
+source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=31d46cc9d191206ab3ed45d6879a13e3ef5656fd#31d46cc9d191206ab3ed45d6879a13e3ef5656fd"
 dependencies = [
  "ahash",
  "alloy-eip7702",
@@ -11766,7 +11766,7 @@ dependencies = [
 [[package]]
 name = "yevm-misc"
 version = "0.1.0"
-source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=3c8a7181a71e2ad963070ba62d533f600c67d6e8#3c8a7181a71e2ad963070ba62d533f600c67d6e8"
+source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=31d46cc9d191206ab3ed45d6879a13e3ef5656fd#31d46cc9d191206ab3ed45d6879a13e3ef5656fd"
 dependencies = [
  "eyre",
  "keccak-asm",
@@ -11779,9 +11779,10 @@ dependencies = [
 [[package]]
 name = "yevm-reth"
 version = "0.1.0"
-source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=3c8a7181a71e2ad963070ba62d533f600c67d6e8#3c8a7181a71e2ad963070ba62d533f600c67d6e8"
+source = "git+https://github.com/sergey-melnychuk/yevm.git?rev=31d46cc9d191206ab3ed45d6879a13e3ef5656fd#31d46cc9d191206ab3ed45d6879a13e3ef5656fd"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "async-trait",
  "eyre",

@@ -16,3 +16,10 @@ sha3 = { version = "0.10", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 proptest = "1"
 thiserror = { version = "2.0", default-features = false }
+
+## Uncomment to build against a local yevm checkout instead of the pinned git
+## rev below -- handy while developing yevm and mpt-lab changes together.
+#[patch."https://github.com/sergey-melnychuk/yevm.git"]
+#yevm-core = { path = "/home/work/Code/yevm/yevm-core" }
+#yevm-reth = { path = "/home/work/Code/yevm/yevm-reth" }
+#yevm-base = { path = "/home/work/Code/yevm/yevm-base" }
