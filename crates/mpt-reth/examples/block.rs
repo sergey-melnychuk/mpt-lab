@@ -18,7 +18,8 @@
 //! factory (`factory.latest()`/`factory.history_by_block_number()`) is
 //! fine — those are just new MDBX read transactions, not new environments.
 //!
-//!     RETH_DATADIR=/path/to/reth/datadir cargo run -p mpt-reth --release --example block [N]
+//!     export RETH_DATADIR=/path/to/reth/datadir
+//!     cargo run -p mpt-reth --release --example block [N]
 //!
 //! `N` defaults to the datadir's latest persisted block when omitted. Any
 //! older `N` still works as long as it's within the node's retained
@@ -148,9 +149,8 @@ async fn main() -> eyre::Result<()> {
     let mut all_events: Vec<Trace> = cache.events.clone();
     for tx in &block.txs {
         cache.reset(); // clears cache.events, NOT cache.accounts -- snapshot first
-        let (t, call) = (tx.tx.clone(), tx.call.clone().into());
-        Executor::new(call)
-            .run(t, head.clone(), &mut cache, &db)
+        Executor::new(tx.call.clone().into())
+            .run(&tx.tx, &head, &mut cache, &db)
             .await?;
         all_events.extend(cache.events.clone());
     }
@@ -159,7 +159,7 @@ async fn main() -> eyre::Result<()> {
     // unconditionally at block end, same timing class as pre_block's
     // EIP-4788/2935 writes, just at the other end of the block.
     cache.reset();
-    post_block(&block, &mut cache, &db).await?;
+    post_block(&block.withdrawals, &mut cache, &db).await?;
     all_events.extend(cache.events.clone());
 
     // 2. Extract the diff from the accumulated events.

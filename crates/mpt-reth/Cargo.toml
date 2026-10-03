@@ -32,9 +32,9 @@ eyre.workspace = true
 # yevm pinned to a commit on its `reth` branch. yevm-reth pins the SAME reth
 # v2.5.1 tag this crate already does, against the SAME local datadir (see
 # examples/block.rs). Bump all three revs together — they are one workspace.
-yevm-core = { git = "https://github.com/sergey-melnychuk/yevm.git", rev = "31d46cc9d191206ab3ed45d6879a13e3ef5656fd" }
-yevm-reth = { git = "https://github.com/sergey-melnychuk/yevm.git", rev = "31d46cc9d191206ab3ed45d6879a13e3ef5656fd" }
-yevm-base = { git = "https://github.com/sergey-melnychuk/yevm.git", rev = "31d46cc9d191206ab3ed45d6879a13e3ef5656fd" }
+yevm-core = { git = "https://github.com/sergey-melnychuk/yevm.git", branch = "main" }
+yevm-reth = { git = "https://github.com/sergey-melnychuk/yevm.git", branch = "main" }
+yevm-base = { git = "https://github.com/sergey-melnychuk/yevm.git", branch = "main" }
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
 alloy-rlp = "0.3"
 alloy-consensus = "2"
