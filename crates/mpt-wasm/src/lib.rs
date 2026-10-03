@@ -199,7 +199,9 @@ fn describe_error(e: &TrieError<Keccak256>) -> JsValue {
 /// One nibble per hex digit — not byte-aligned, so this is *not*
 /// `hex::encode`: a 3-nibble path prints as 3 hex characters, not 4.
 fn nibbles_to_hex(path: &[u8]) -> String {
-    path.iter().map(|n| char::from_digit(*n as u32, 16).unwrap()).collect()
+    path.iter()
+        .map(|n| char::from_digit(*n as u32, 16).unwrap())
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -273,7 +275,10 @@ fn to_view(node: &Node<Keccak256>) -> NodeView {
             ),
             ..base
         },
-        Node::Stub(_) => NodeView { kind: "Stub", ..base },
+        Node::Stub(_) => NodeView {
+            kind: "Stub",
+            ..base
+        },
     }
 }
 
@@ -387,7 +392,8 @@ impl WasmProofTrie {
     pub fn from_witness(root_hex: &str, nodes_hex_json: &str) -> Result<WasmProofTrie, JsValue> {
         console_error_panic_hook::set_once();
         let root = parse_hash32(root_hex)?;
-        let witness: BTreeMap<[u8; 32], Vec<u8>> = parse_witness_nodes(nodes_hex_json)?.into_iter().collect();
+        let witness: BTreeMap<[u8; 32], Vec<u8>> =
+            parse_witness_nodes(nodes_hex_json)?.into_iter().collect();
         let inner = Trie::from_node(build_partial::<Keccak256>(&witness, &root));
         Ok(WasmProofTrie { inner, witness })
     }
@@ -566,8 +572,14 @@ mod tests {
         assert_eq!(r.item_count().unwrap(), 4);
         assert_eq!(r.at(0).unwrap().data().unwrap(), &[0x07][..]);
         assert_eq!(r.at(1).unwrap().data().unwrap(), &[0x2a][..]);
-        assert_eq!(r.at(2).unwrap().data().unwrap(), hex::decode("11".repeat(32)).unwrap());
-        assert_eq!(r.at(3).unwrap().data().unwrap(), hex::decode("22".repeat(32)).unwrap());
+        assert_eq!(
+            r.at(2).unwrap().data().unwrap(),
+            hex::decode("11".repeat(32)).unwrap()
+        );
+        assert_eq!(
+            r.at(3).unwrap().data().unwrap(),
+            hex::decode("22".repeat(32)).unwrap()
+        );
     }
 
     #[test]
