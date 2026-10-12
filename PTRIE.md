@@ -468,7 +468,9 @@ way down.
 
 `eth_getProof` structurally cannot do this: it takes the **raw** slot and hashes
 it for you, so steering to a chosen path would require inverting keccak. **This
-is the reason to be on the database rather than an endpoint.**
+is the reason to be on the database rather than an endpoint.** (§8.7: the silt
+wrapper now serves this exact read over JSON-RPC, lifting the constraint when
+the node runs silt-exex.)
 
 ### 8.2 Verified on mainnet
 
@@ -601,6 +603,33 @@ Also relevant: `StateProofProvider::witness(input, target, mode)` returns
 `Vec<Bytes>` — reth's own witness generation, for when the access set *is* known
 ahead of time.
 
+### 8.7 Over the wire: `silt_multiproof` and `mpt-silt`
+
+§8.1's "database rather than an endpoint" was about *stock* endpoints. The
+silt reth wrapper (`../silt`, its PLAN D8) now serves exactly this read on
+the node's own RPC server: `silt_multiproof(targets: [[hashedAddress,
+[hashedSlotProbe, ..]], ..], blockHash|null)` passes **pre-hashed** keys
+straight through to `StateProofProvider::multiproof` and returns the
+path-keyed RLP walks as plain JSON. `crates/mpt-silt` implements §8.3's two
+providers over HTTP (blocking `ureq`, same hash-keyed cache, nodes verified
+by expected-hash lookup) — the resolver needs the node's RPC URL, not its
+datadir. Verified live against a silt-exex `--dev` node
+(`examples/resolve.rs`): the account-trie root fetched by `(path = [],
+hash = stateRoot)`, then every hashed child of the root fork (12/12)
+resolved by path-directed probes, all hash-verified.
+
+`crates/mpt-silt/examples/block.rs` is the full-pipeline port of
+`mpt-reth/examples/block.rs`: the replay is still **yevm's** (`pre_block`
++ `Executor::run` + `post_block` produce the diff, system writes
+included) — only the data access moved onto the wire. Execution
+pre-state reads through `yevm_core::rpc::Rpc` pinned at block N-1's
+hash; the N-1 witness comes from ONE batched `silt_multiproof` call
+(§8.5's bootstrap, and not subject to `eth_getProof`'s proof-window
+limit); stubs resolve through the HTTP providers. Verified on a
+silt-exex `--dev` chain: transfer block, storage-writing deploy block,
+and an empty block (EIP-4788/2935 system writes only) all recompute
+header `stateRoot` byte-exact.
+
 ---
 
 ## 9. Entry points
@@ -617,6 +646,9 @@ ahead of time.
 | `crates/mpt-reth/examples/sweep.rs` | Step 0: Fork-occupancy histogram across real slots — **done** |
 | `crates/mpt-reth/src/lib.rs` (`RethProvider`) | Step 4: caching `NodeProvider` impl — **done** |
 | `crates/mpt-reth/examples/phase_b.rs` | `RethProvider` acceptance test, live against mainnet — **done** |
+| `crates/mpt-silt/src/lib.rs` | §8.3's providers + batched `multiproof()` over `silt_multiproof` (§8.7) — no datadir, no reth dependency — **done** |
+| `crates/mpt-silt/examples/resolve.rs` | Path-directed resolve, live against a silt-exex dev node — **done** |
+| `crates/mpt-silt/examples/block.rs` | yevm block replay + partial-trie root recomputation, fully over RPC — **done** |
 
 ### Remaining order
 

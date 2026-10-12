@@ -43,12 +43,13 @@ assert_eq!(verify_proof(&root, b"cat", &proof), Ok(None));
 
 ## Workspace
 
-This crate is one of three in the workspace:
+This crate is one of four in the workspace:
 
 | Crate | What it is |
 |---|---|
 | [`mpt-core`](crates/mpt-core) | The trie itself — everything on this page. `no_std` + `alloc`, no I/O, no wasm-specific dependencies. |
 | [`mpt-reth`](crates/mpt-reth) | Resolves a partial trie's `Stub`s from a local reth database via path-directed multiproofs — the DB-level counterpart to what `eth_getProof` can't express over RPC (`PTRIE.md` §8). Pulls reth's dependency tree, so it's kept out of the default workspace members. |
+| [`mpt-silt`](crates/mpt-silt) | The same providers over HTTP: resolves `Stub`s through the `silt_multiproof` endpoint served by the silt reth wrapper (`PTRIE.md` §8.7), so the resolver needs an RPC URL instead of the datadir. No reth dependency. |
 | [`mpt-wasm`](crates/mpt-wasm) | `mpt-core` compiled to wasm behind two browser pages: one reconstructs and independently verifies a real account/storage trie from a live `eth_getProof` witness, the other builds an Ethereum-style trie from scratch out of key/value pairs you type in. |
 
 ## Features

@@ -1,0 +1,26 @@
+[package]
+name = "mpt-silt"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# HTTP twin of mpt-reth's providers: resolves a partial trie's `Stub`s
+# through the `silt_multiproof` endpoint served by the silt reth wrapper
+# (../silt, PLAN D8) instead of reading the reth datadir directly.
+# reth-free by construction — kept out of default members only to mirror
+# mpt-reth's layout; it builds in seconds.
+[dependencies]
+mpt-core = { path = "../mpt-core" }
+
+ureq = "2"
+serde_json = "1"
+hex.workspace = true
+
+[dev-dependencies]
+eyre.workspace = true
+rlp = "0.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# The `block` example replays blocks on yevm (that is the point: OUR evm +
+# OUR trie, reth only as the node across the wire). Same pin as mpt-reth.
+yevm-core = { git = "https://github.com/sergey-melnychuk/yevm.git", branch = "main" }
+yevm-base = { git = "https://github.com/sergey-melnychuk/yevm.git", branch = "main" }
