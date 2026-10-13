@@ -647,6 +647,9 @@ response bodies at 10 MB, and a batched bootstrap for a busy block
 a clean "bootstrap failed" on big blocks while smaller ones pass. Read
 through `into_reader()` instead; size is the only thing the cap
 guarded, since every node is hash-verified downstream anyway.
+Confirmed fixed on that same block (941 accounts / 2359 slots, 56 stubs,
+MATCH) — and that run was cross-machine: resolver on a laptop, node on
+the other end of a LAN URL, which is the §8.7 claim made literal.
 
 ---
 
