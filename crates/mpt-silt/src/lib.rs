@@ -82,13 +82,17 @@ pub fn multiproof(
     let body = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"silt_multiproof","params":[{targets_json},{block}]}}"#
     );
-    let text = ureq::post(url)
+    let response = ureq::post(url)
         .set("content-type", "application/json")
         .send_string(&body)
-        .ok()?
-        .into_string()
         .ok()?;
-    let mut parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
+    // Not `into_string()`: that caps bodies at 10 MB, and a batched
+    // mainnet bootstrap (hundreds of account walks in one call)
+    // legitimately exceeds it. Every node is hash-verified downstream,
+    // so size is the only thing the cap was guarding.
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes).ok()?;
+    let mut parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let result = parsed.get_mut("result")?.take();
     parse(&result)
 }

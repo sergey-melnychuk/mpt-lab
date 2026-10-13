@@ -637,7 +637,16 @@ collapse-resolution firing through `silt_multiproof`, which the small
 `--dev` trie never triggered), computed `stateRoot` == header, run from
 a plain debug build: the heavy trie walks now happen server-side, so
 §8.5's "`--release` is mandatory" applies to the wrapper, not the
-resolver.
+resolver. Block 26179889 (265 txs, 636 accounts, **destroyed: 1**, 22
+stubs) additionally exercised the account-trie removal path — every
+mutation kind is now mainnet-verified over the wire.
+
+Gotcha found at mainnet scale: `ureq`'s `into_string()` silently caps
+response bodies at 10 MB, and a batched bootstrap for a busy block
+(941 accounts / 2359 slots) legitimately exceeds that — the symptom is
+a clean "bootstrap failed" on big blocks while smaller ones pass. Read
+through `into_reader()` instead; size is the only thing the cap
+guarded, since every node is hash-verified downstream anyway.
 
 ---
 
