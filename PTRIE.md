@@ -651,6 +651,21 @@ Confirmed fixed on that same block (941 accounts / 2359 slots, 56 stubs,
 MATCH) — and that run was cross-machine: resolver on a laptop, node on
 the other end of a LAN URL, which is the §8.7 claim made literal.
 
+`examples/cached.rs` turns the same machinery into a continuous
+validator of silt's diff **feed**: subscribe to the stream that fills
+silt-cache, and per `BlockDiff` apply the diff's own post-values (no
+yevm replay) onto a partial trie witnessed at `diff.parent_hash`, then
+compare the recomputed root against the canonical header. One 32-byte
+comparison certifies the diff ≡ the state transition — including
+omissions, which silt's planned per-key RPC sweep structurally cannot
+see (a dropped write isn't in the diff, so a sweep never checks it; a
+root recomputation has nowhere to hide it). Span folds validate at the
+span tip; reorgs are safe because every span pins to its own
+`parent_hash`. Verified live on a silt-exex `--dev` feed: every span
+MATCH at 2-3 ms each, including a transfer block, a storage-writing
+deploy, and a stream of empty blocks. This is soak-shaped: one batched
+`silt_multiproof` + one header read per span, no execution.
+
 ---
 
 ## 9. Entry points
@@ -670,6 +685,7 @@ the other end of a LAN URL, which is the §8.7 claim made literal.
 | `crates/mpt-silt/src/lib.rs` | §8.3's providers + batched `multiproof()` over `silt_multiproof` (§8.7) — no datadir, no reth dependency — **done** |
 | `crates/mpt-silt/examples/resolve.rs` | Path-directed resolve, live against a silt-exex dev node — **done** |
 | `crates/mpt-silt/examples/block.rs` | yevm block replay + partial-trie root recomputation, fully over RPC — **done** |
+| `crates/mpt-silt/examples/cached.rs` | Continuous feed validator: diff -> partial trie -> root vs header, no replay — **done** |
 
 ### Remaining order
 
