@@ -630,6 +630,15 @@ silt-exex `--dev` chain: transfer block, storage-writing deploy block,
 and an empty block (EIP-4788/2935 system writes only) all recompute
 header `stateRoot` byte-exact.
 
+**Verified on mainnet** against the silt-exex wrapper on the live node:
+block 26179877 — 141 txs, 596 touched accounts, 2121 touched slots, 16
+withdrawals — replayed with **16 stubs resolved over HTTP** (Phase B
+collapse-resolution firing through `silt_multiproof`, which the small
+`--dev` trie never triggered), computed `stateRoot` == header, run from
+a plain debug build: the heavy trie walks now happen server-side, so
+§8.5's "`--release` is mandatory" applies to the wrapper, not the
+resolver.
+
 ---
 
 ## 9. Entry points
